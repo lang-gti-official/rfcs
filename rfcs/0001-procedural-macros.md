@@ -9,13 +9,13 @@
 | Area | language |
 | Proposal | https://github.com/lang-gti-official/rfcs/pull/1 |
 | Decision | pending |
-| Implementation | none |
+| Implementation | [Phase 1 — GTI PR #263](https://github.com/lang-gti-official/gti/pull/263) (in progress) |
 | Supersedes | none |
 | Superseded by | none |
 
 ## Summary
 
-Implement the direction in [GTI issue #251](https://github.com/lang-gti-official/gti/issues/251): typed procedural macros declared with `#macro(proc)`, written in GTI, and invoked with ordinary calls such as `html({...})`. The macro runs during compilation, consumes syntax, and returns syntax for ordinary GTI checking. It does not evaluate the caller's runtime expressions while expanding them.
+Implement the direction in [GTI issue #251](https://github.com/lang-gti-official/gti/issues/251): typed procedural macros declared with `#macro(proc)`, written in GTI, and invoked explicitly with `!`, such as `html!({...})`. The macro runs during compilation, consumes syntax, and returns syntax for ordinary GTI checking. It does not evaluate the caller's runtime expressions while expanding them.
 
 The implementation has **exactly three phases**:
 
@@ -23,7 +23,7 @@ The implementation has **exactly three phases**:
 2. Procedural execution through the existing verified-MIR constant engine and checked expression publication.
 3. Imported-library integration, diagnostics/tooling/cache completion, and a small HTML-like demonstration.
 
-**The first end-to-end feature acceptance gate is after phase 3. Its centerpiece is a small, separately imported `html({...})` macro that builds and runs on LLVM.** Phases 1 and 2 have mandatory development checks, but passing them does not constitute feature acceptance. The final gate includes the negative, hygiene, regression, tooling, and cost evidence needed to make that demonstration trustworthy.
+**The first end-to-end feature acceptance gate is after phase 3. Its centerpiece is a small, separately imported `html!({...})` macro that builds and runs on LLVM.** Phases 1 and 2 have mandatory development checks, but passing them does not constitute feature acceptance. The final gate includes the negative, hygiene, regression, tooling, and cost evidence needed to make that demonstration trustworthy.
 
 This is a design and implementation plan, not an implementation claim. Issue #251 records agreement on the declaration spelling and broad direction. The bounded profile and detailed choices below remain proposed until explicitly accepted.
 
@@ -76,7 +76,7 @@ Proposed user-facing demonstration:
 import demo.html;
 
 // Inside an ordinary function; user.name is a runtime string/view.
-auto page = html({
+auto page = html!({
   <div class="profile">
     <h1>{user.name}</h1>
     <p>{"Welcome!"}</p>
@@ -84,7 +84,7 @@ auto page = html({
 });
 ```
 
-The module exports `html` using GTI's ordinary module rules. Qualified invocation, such as `web::html({...})` for a macro declared in that namespace, is covered too. No `!`, `#expand`, or HTML compiler hook is introduced.
+The module exports `html` using GTI's ordinary module rules. Qualified invocation, such as `web::html!({...})` for a macro declared in that namespace, is covered too. The owner selected `!` during phase-1 implementation to make opaque input explicit. No `#expand` or HTML compiler hook is introduced; existing typed macros retain ordinary call spelling.
 
 The macro converts static tags/attributes into literal arguments to ordinary library operations. Each interpolation is parsed as GTI syntax and spliced into the generated expression. The demo library owns its node/text storage; a returned page cannot retain an unchecked borrow into a temporary or the macro executor. Rendering a profile named `Ada & Lin` produces this test result:
 
@@ -100,16 +100,16 @@ Markup structure is checked while compiling; rendering and copying runtime text 
 
 - A procedural macro is a namespace-scope declaration with one by-value syntax-group parameter and one `expr` result. Its body is ordinary typed GTI executed in the procedural profile; an additional `consteval` modifier is unnecessary. It is not a function item and cannot be called at runtime.
 - The first profile has no macro generics, overloads, packs, defaults, member/operator forms, or multiple syntax arguments. Helpers may use the already supported constant-execution language facilities. Additional shapes are future extensions with explicit staging and argument contracts.
-- An eligible invocation names one imported procedural declaration through ordinary unqualified or namespace-qualified lookup and supplies one outer braced group: `name({...})`. The outer braces delimit the input; their inner balanced groups are retained. Commas inside it are input tokens, not macro argument separators.
+- An eligible invocation names one imported procedural declaration through ordinary unqualified or namespace-qualified lookup and supplies one outer braced group: `name!({...})`. The outer braces delimit the input; their inner balanced groups are retained. Commas inside it are input tokens, not macro argument separators.
 - Only imported procedural definitions are callable in this slice. Same-module calls receive a located unsupported-profile diagnostic. This bounds scheduling without making same-module macros a permanent non-goal.
 - One qualified name cannot mix ordinary functions, existing typed macros, and procedural macros. A procedural selection must not depend on first type-checking its raw input. Conflicting imports and ambiguous names are diagnosed before expansion. Ordinary local shadowing still applies; no parser heuristic overrides normal lookup.
 - A procedural callee must be non-dependent. Calls inside generic code can retain generic caller expressions, but resolving their meaning remains ordinary concrete analysis. A dependent macro name is rejected in this profile; it cannot trigger type-driven interpretation of raw input.
 
 ### Capture and lookup timing
 
-The lexer keeps GTI lexical rules. The parser records an unresolved call candidate containing a qualified/unqualified name and a balanced braced token group, without deciding from the contents whether it is HTML, a GTI block, or an initializer. Source extent, delimiters, token kinds, punctuation adjacency, and trivia boundaries must survive capture.
+The lexer keeps GTI lexical rules. The parser recognizes an explicit `name!({...})` candidate containing a qualified/unqualified name and a balanced braced token group. It never decides from the contents whether this is HTML or ordinary GTI. Source extent, delimiters, token kinds, punctuation adjacency, and trivia boundaries must survive capture.
 
-The semantic lookup stage selects the invocation policy. For a procedural macro it passes the captured group without evaluating or type-checking embedded expressions. For an ordinary call or existing typed macro it parses the retained input under the existing argument grammar and applies the existing rules. Failure to parse that ordinary argument never retries the name as a procedural macro. Regression tests must cover valid ordinary braced calls as well as ambiguous and invalid calls.
+Semantic lookup requires the name before `!` to select a procedural macro and passes its captured group without evaluating or type-checking embedded expressions. An ordinary callable or a shadowing local cannot acquire procedural behavior through `!`; it receives a diagnostic. Ordinary calls and existing typed macros keep their original parsing and evaluation rules. A procedural declaration called without `!` receives a diagnostic. Regression tests cover ordinary braced calls, shadowing, ambiguity and invalid categories.
 
 Unbalanced GTI delimiters and invalid GTI lexemes remain frontend errors. Balanced but mismatched markup tags are the library's responsibility. In particular, this is token-based syntax, not arbitrary raw HTML: quoted text and GTI comment/string rules apply. Source-loading directives must not run merely because their tokens occur inside the captured group; the capture/source-loading boundary must either retain such spellings inertly or reject them with a located diagnostic. The first profile rejects directives inside captured input and generated output.
 
@@ -219,7 +219,7 @@ Warm reuse must preserve diagnostics and logical budget charges. Observe cross-p
 - **Run native proc-macro plugins:** can reuse broad host libraries, but introduces host ABI, bootstrap/cross-compilation, isolation, reproducibility, and crash boundaries. Reusing verified MIR is the chosen first direction.
 - **Create a new compile-time AST interpreter:** short-term convenience would duplicate GTI execution rules. Extend the existing staged engine and its explicit capability profile instead.
 - **Return unconstrained tokens initially:** permits more expansion positions, but broadens grammar/staging/injection rules. The proposed `expr` result gives a useful end-to-end slice and leaves later categories explicit.
-- **Use a distinct invocation sigil:** simplifies early recognition but contradicts the direction recorded in #251. Deferred balanced capture and semantic selection carry the implementation cost instead.
+- **Keep ordinary invocation spelling:** was the initial direction in #251. The owner revised it on 2026-11-05 to use `!` for procedural macros. Explicit capture avoids reparsing ordinary calls and lets source loading reject directives only inside procedural input. Existing typed macros are unchanged.
 - **Implement HTML in the compiler:** might make one demo easy but fails the general facility requirement. The unrelated macro and library-owned grammar are mandatory.
 
 ## Unresolved questions
@@ -228,7 +228,7 @@ These are design decisions to settle during review or the named phase, not claim
 
 - Final public syntax type/function names and the source-library versus trusted-capability split. The minimal builder/parse/splice/span contract above is required; phase 1 must make its signatures and failure behavior concrete.
 - Whether reviewers prefer the proposed `tokens -> expr` profile or a different category-checked boundary. Unrestricted token publication is not an implicit fallback.
-- Exact source-loader interception point for inert capture, and how malformed groups preserve recovery without accidentally executing directives. The audited loader currently processes configuration directives before parser/semantic invocation selection. Phase 1 therefore needs retained raw groups and an explicit ordering design, not merely a new call-parser branch. It must prove that ordinary-call directive behavior is preserved and a rejected procedural group cannot commit flag/import effects; any compatibility change requires explicit review.
+- Source-loader interception is resolved by the explicit `name!({...})` boundary: inspect raw lexical groups before processing directives or replaying a processed unit. Reject directives/imports inside the group before publishing effects. Ordinary-call directive behavior remains unchanged; malformed-group recovery and cache replay still require tests.
 - Concrete limit names, defaults/minimums, and cancellation granularity, informed by phase-2 measurements. All required limit dimensions and deterministic failure behavior remain mandatory.
 - The smallest representation for the demonstration's owned node tree using currently supported GTI libraries. Keep its contract equivalent to the handwritten comparison; do not add a nominal compiler exception to accommodate it.
 
@@ -245,7 +245,7 @@ The phases are sequential dependencies, not three separate feature acceptance ga
 Work:
 
 1. Add procedural declaration identity without changing existing typed-macro representation/behavior by accident. Define initial signature restrictions and ambiguity/shadowing diagnostics.
-2. Introduce lossless balanced groups and unresolved braced-call candidates at the loader/lexer/parser boundary. Preserve ordinary-call fallback, lexical rules, directives rejection, incomplete-input recovery, and source extents.
+2. Introduce lossless balanced groups and explicit procedural-call candidates at the loader/lexer/parser boundary. Preserve ordinary-call behavior, lexical rules, directives rejection, incomplete-input recovery, and source extents.
 3. Implement immutable syntax storage, typed cursors/builders, expression parsing/splicing, definition-context/fresh identifiers, and validated diagnostic spans. Bind intrinsic capabilities by trusted identity.
 4. Extend shared macro context/provenance and expansion ownership structures; document syntax-arena lifetimes and the result-sealing interface for phase 2.
 5. Add declaration/group handling to formatter, Tree-sitter, and editor syntax recognition, with opaque-content preservation.
@@ -282,7 +282,7 @@ Work:
 4. Retain the unrelated evaluate-once macro as a public-facing example/test of generality. Finish non-procedural macro regressions and generated ownership/cleanup cases.
 5. Record handwritten-equivalent runtime/allocation/code-size and compile-time/memory scaling measurements; update implemented language, architecture, diagnostics, syntax-library, and editor documentation.
 
-**First acceptance gate:** perform G1 below only after all three phases are integrated into one exact candidate. The small `html({...})` demonstration is the visible acceptance result; a toy happy-path expansion alone does not satisfy it.
+**First acceptance gate:** perform G1 below only after all three phases are integrated into one exact candidate. The small `html!({...})` demonstration is the visible acceptance result; a toy happy-path expansion alone does not satisfy it.
 
 ### Small HTML demonstration scope
 
@@ -327,7 +327,9 @@ Contributors run the reproducer/new cases, owning/cross-phase/tooling checks, `c
 
 ## Decision record
 
-- 2026-11-05: the owner requested a three-phase implementation plan in this repository, with the first acceptance gate after phase 3 centered on a small `html({...})` demonstration.
+- 2026-11-05: the owner authorized phase 1 and explicitly selected `name!({...})` for procedural invocation, retaining existing typed macro calls. This supersedes the earlier ordinary-call spelling from #251. Phase 1 is in progress in GTI PR #263; execution and the final acceptance gate remain later phases.
+
+- 2026-11-05: the owner requested a three-phase implementation plan in this repository, with the first acceptance gate after phase 3 centered on a small `html!({...})` demonstration.
 - Issue #251 records agreement on `#macro(proc)`, typed syntax, ordinary calls, and preservation of existing typed macros. It leaves the syntax API and staging details open.
 - This RFC proposes the expression-only, single-group, imported-definition slice and the detailed contracts above. No acceptance or implementation decision is recorded for those choices. Status remains `draft`.
 
