@@ -9,7 +9,7 @@
 | Area | language |
 | Proposal | https://github.com/lang-gti-official/rfcs/pull/1 |
 | Decision | pending |
-| Implementation | [Phase 1 — GTI PR #263](https://github.com/lang-gti-official/gti/pull/263); [Phase 2 — GTI PR #267](https://github.com/lang-gti-official/gti/pull/267) (in progress) |
+| Implementation | [Phase 1 — GTI PR #263](https://github.com/lang-gti-official/gti/pull/263); [Phase 2 — GTI PR #267](https://github.com/lang-gti-official/gti/pull/267); [Phase 3 — GTI PR #270](https://github.com/lang-gti-official/gti/pull/270) (G1 validation in progress) |
 | Supersedes | none |
 | Superseded by | none |
 
@@ -118,7 +118,7 @@ Unbalanced GTI delimiters and invalid GTI lexemes remain frontend errors. Balanc
 The required syntax interface consists of:
 
 - Immutable token/group inspection, including delimiters, spelling, adjacency, source spans, and bounded traversal.
-- Token/group builders, literal and punctuation construction, definition-context identifier construction, and fresh binding identities with matching reference construction.
+- Token/group builders, literal and safely quoted string-literal construction, punctuation construction, definition-context identifier construction, and fresh binding identities with matching reference construction.
 - Parsing a caller-owned group into one expression while preserving its lookup/access/generic context. This parses syntax; it does not inspect runtime values or query resolved caller expression types.
 - Typed expression splicing into constructed syntax, and sealing exactly one complete expression with no trailing tokens. A builder can provide the first implementation; an ergonomic quotation language can follow later.
 - Located failure reporting with a primary span, related spans, and an expansion trace. Library diagnostics cannot forge arbitrary source locations or a compiler diagnostic identity.
@@ -211,6 +211,33 @@ Expected successful-path costs are compile-time token traversal/construction plu
 Record cold and warm compilation time, expansion/interpreter work, peak memory, generated IR/object size, runtime, and allocations. Compare the HTML expansion with handwritten calls using the same data structure, ownership, escaping, and error contract. Measure an unrelated macro too. Use 1, 16, and 256 invocations and small/medium/larger trees (for example 8, 32, and 128 nodes) to expose repeated staging, whole-model copying, quadratic syntax rebuilding, and unbounded retained roots.
 
 Warm reuse must preserve diagnostics and logical budget charges. Observe cross-platform host differences without confusing them with target semantics. Report measurements and variance; do not claim a speedup in this RFC. A material runtime regression against the equivalent handwritten contract fails acceptance unless the owner explicitly accepts the measured tradeoff. Compile-time and memory growth must be explained and bounded before the gate; raising limits is not a substitute for fixing pathological work.
+
+### Phase 3 measured cost (2026-11-05)
+
+Candidate `d850f5de3b2378b371aa4ebe0ef6ec514cfbd204`, optimized host compiler,
+LLVM O3 on macOS arm64. Each runtime sample constructs and renders 20,000 pages;
+medians use nine interleaved samples. Compile/RSS medians use three compilations.
+Allocations and allocated bytes were exactly equal between macro and handwritten
+construction at every size; the output MIR contains no procedural operations or
+syntax capabilities. No speedup is claimed.
+
+| Children | Runtime ms, direct / macro | Compile seconds, direct / macro | Peak RSS MiB, direct / macro | Text bytes, direct / macro |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 224.54 / 225.12 | 1.47 / 1.52 | 404.7 / 423.3 | 46080 / 46352 |
+| 4 | 482.67 / 488.49 | 1.516 / 1.822 | 448.3 / 462.0 | 46924 / 51852 |
+| 16 | 1311.68 / 1316.96 | 1.584 / 2.789 | 457.0 / 547.8 | 49032 / 67564 |
+| 64 | 4952.21 / 4965.14 | 1.724 / 11.213 | 476.5 / 1177.6 | 53568 / 131036 |
+
+The macro emits a concrete tree at each invocation; the handwritten comparator
+can share its leaf helper. At 64 children this costs more compile time, memory
+and code size, despite equivalent runtime operations/allocations. The source
+library batches append calls to avoid the much higher cost of a large generated
+closure, and immutable syntax joins remove repeated prefix copying. Ordinary
+parser, work and storage limits remain enforced. This is evidence for the stated
+small library profile, not a claim of constant-cost expansion or arbitrary-size
+HTML support. The unrelated identity-macro comparison produced the same 264 text
+bytes and 16,904-byte executable as direct code; its runtime median ratio was
+0.994 and compile ratio 1.010.
 
 ## Alternatives and tradeoffs
 
@@ -326,6 +353,8 @@ Tests should extend existing owners where appropriate (`macro_result_parser`, `m
 Contributors run the reproducer/new cases, owning/cross-phase/tooling checks, `compiler_pipeline`, native smoke, and relevant platform/performance checks under GTI's current workflow. Integration CI and post-integration full validation retain their responsibilities; do not run redundant complete local suites to finish each phase. C++ parity is not a new-feature gate. Passing G1 supplies implementation-acceptance evidence for this bounded feature, subject to the owner's decision; release availability still requires the relevant release pipeline. No preview-channel publication is part of this plan.
 
 ## Decision record
+
+- 2026-11-05: the owner explicitly requested phase 3 including the HTML demonstration. PR #270 contains the combined foundation and source library. The measured implementation uses immutable shared syntax joins with bounded virtual output and charged materialization; joins charge nodes and edges rather than copying every prefix. The API adds `string_literal(value, origin)` to quote text safely into one token. The HTML client reserves child storage once and emits append calls with at most eight children each, avoiding the compile-time cost of large generated ownership closures. Local examples, markup/type/access/move/borrow failures, editor queries and installed external-library/cache tests pass. The corrected exact candidate is `d850f5de3b2378b371aa4ebe0ef6ec514cfbd204`. On macOS arm64 with LLVM 23 it passed all 49 focused subsystem checks, `compiler_pipeline`, native O0/O3 smoke, and both cost comparisons (run `run-a382c12d3f4e4087afc0e767a7663b46`). Linux x64 validation is still running; this record does not yet claim G1 completion, integration or release. The first candidate caught and repaired a sorted-manifest violation and an explicit `<algorithm>` include required by GCC.
 
 - 2026-11-05: the owner explicitly requested implementation of phase 2. GTI PR #267 implements the MIR procedural request profile, source `std::syntax` operations, sealed expression checking, shared limits and snapshot-local successful reuse. Focused validation passed on the clean phase-2 candidate `31e577bcb5c6bbe1979a7eeac43c28c6b4272de2`; PR #267 is proceeding through normal required CI and merge-queue integration. This does not claim the phase-3 HTML gate has passed. The concrete API adds a checked `keyword` builder alongside literal/punctuation/identifier construction, and names validated spans `location` to avoid colliding with the `span` type. Initial configurable defaults are 65,536 nodes, 1,048,576 cumulative spelling bytes, 65,536 cumulative tokens and 256 group levels, plus the existing shared constant/macro limits. On macOS arm64 with LLVM 23, 40 focused subsystem checks, `compiler_pipeline`, and native scalar/ownership smoke at O0/O3 passed (remote run `run-c2218ecedcf6418abb90c75d48408e57`; full commands/evidence are recorded on PR #267). The source examples cover evaluate-once side effects, move-only cleanup, constexpr initializers and default arguments; owning tests also cover distinct same-spelled fresh bindings, target selection, recursion, cancellation and source syntax operations. An LLVM O3 identity-macro loop and its handwritten equivalent both produced 264 text bytes and 16,904-byte executables with no syntax/allocation operations in MIR. Nine interleaved samples gave medians 95.952 / 95.966 ms; three compiler samples gave medians 90.264 / 88.288 ms and peak RSS 98,844,672 / 99,401,728 bytes (direct / macro). No speedup is claimed. Shared Linux hosts lack the new LLVM 23 pin, so the required cross-platform PR/queue gate remains mandatory; earlier Linux LLVM22 development evidence is not current-pin evidence. Broader library/HTML scaling and final feature acceptance remain phase 3.
 
