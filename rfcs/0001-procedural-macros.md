@@ -9,7 +9,7 @@
 | Area | language |
 | Proposal | https://github.com/lang-gti-official/rfcs/pull/1 |
 | Decision | pending |
-| Implementation | [Phase 1 — GTI PR #263](https://github.com/lang-gti-official/gti/pull/263) (in progress) |
+| Implementation | [Phase 1 — GTI PR #263](https://github.com/lang-gti-official/gti/pull/263); [Phase 2 — GTI PR #267](https://github.com/lang-gti-official/gti/pull/267) (in progress) |
 | Supersedes | none |
 | Superseded by | none |
 
@@ -327,11 +327,13 @@ Contributors run the reproducer/new cases, owning/cross-phase/tooling checks, `c
 
 ## Decision record
 
-- 2026-11-05: the owner authorized phase 1 and explicitly selected `name!({...})` for procedural invocation, retaining existing typed macro calls. This supersedes the earlier ordinary-call spelling from #251. Phase 1 is in progress in GTI PR #263; execution and the final acceptance gate remain later phases.
+- 2026-11-05: the owner explicitly requested implementation of phase 2. GTI PR #267 implements the MIR procedural request profile, source `std::syntax` operations, sealed expression checking, shared limits and snapshot-local successful reuse. Validation is in progress; this authorization does not claim the phase-3 HTML gate has passed. The concrete API adds a checked `keyword` builder alongside literal/punctuation/identifier construction, and names validated spans `location` to avoid colliding with the `span` type. Initial configurable defaults are 65,536 nodes, 1,048,576 cumulative spelling bytes, 65,536 cumulative tokens and 256 group levels, plus the existing shared constant/macro limits. Measurements and final evidence will be linked before phase-2 handoff.
+
+- 2026-11-05: the owner authorized phase 1 and explicitly selected `name!({...})` for procedural invocation, retaining existing typed macro calls. This supersedes the earlier ordinary-call spelling from #251. Phase 1 focused evidence and its implementation are recorded in GTI PR #263; final feature acceptance remains after phase 3.
 
 - 2026-11-05: the owner requested a three-phase implementation plan in this repository, with the first acceptance gate after phase 3 centered on a small `html!({...})` demonstration.
 - Issue #251 records agreement on `#macro(proc)`, typed syntax, ordinary calls, and preservation of existing typed macros. It leaves the syntax API and staging details open.
-- This RFC proposes the expression-only, single-group, imported-definition slice and the detailed contracts above. No acceptance or implementation decision is recorded for those choices. Status remains `draft`.
+- The owner authorized phases 1 and 2 of this bounded expression-only, single-group, imported-definition design. The overall feature remains pending its first acceptance gate after phase 3; the proposal status remains `draft` until that explicit decision.
 
 ## References
 
