@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a compiler bug
+    url: https://github.com/lang-gti-official/gti/issues
+    about: Report implementation defects in the compiler repository.
