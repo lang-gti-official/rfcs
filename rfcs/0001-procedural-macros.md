@@ -9,7 +9,7 @@
 | Area | language |
 | Proposal | https://github.com/lang-gti-official/rfcs/pull/1 |
 | Decision | pending |
-| Implementation | [Phase 1 — GTI PR #263](https://github.com/lang-gti-official/gti/pull/263); [Phase 2 — GTI PR #267](https://github.com/lang-gti-official/gti/pull/267); [Phase 3 — GTI PR #270](https://github.com/lang-gti-official/gti/pull/270) (G1 focused acceptance passed; integration pending) |
+| Implementation | [Phase 1 — GTI PR #263](https://github.com/lang-gti-official/gti/pull/263); [Phase 2 — GTI PR #267](https://github.com/lang-gti-official/gti/pull/267); [Phase 3 — GTI PR #270](https://github.com/lang-gti-official/gti/pull/270) (G1 and generality-audit focused evidence passed; integration pending) |
 | Supersedes | none |
 | Superseded by | none |
 
@@ -266,6 +266,74 @@ Cold/warm package-cache behavior and invalidation are checked separately by
 the external-library workflow tests. Full raw samples and commands are
 retained with the implementation PR's acceptance evidence.
 
+### Generality audit (2026-11-05)
+
+The owner requested a broader audit after the initial G1 demonstration. The audit
+found shared semantic defects beyond HTML: checked expansion aliases were not
+followed consistently by reference/return proofs, and aliases or grouping could
+lose retained loans for borrowed carriers and captured closures. The latter
+cases reached MIR verification errors; the audit did not demonstrate unsafe
+generated execution. PR #270 now follows the existing checked aliases in shared
+ownership queries, preserves contextual conversions and capture/owner facts, and
+tests both valid reference results and invalid mutation/escape cases. No HTML or
+public library spelling selects these rules.
+
+The independent cases also cover assignment/address/callable positions, captures,
+arrays, generic callers, constexpr extents, nested expansion and diagnostics.
+The implemented boundary is still imported namespace-level tokens-to-expression
+macros: ordinary helpers and generic callers work, while procedural member,
+overload or generic declarations and statement/declaration output remain outside
+this profile. Passing these checks is evidence for this boundary, not a claim of
+exhaustive production stability or support for every macro category.
+
+The audit corrected the example corpus to execute LLVM O0/O3 by default and
+moved the reusable library below `examples/procedural-macros/`, where it is
+covered through executable consumers. All three standalone examples have exact
+per-target inventories. The separate phase-1 full-CI failure was the missing
+`std::syntax` manifest registration, repaired upstream by #273 and reconciled
+with the executable API entry here; that failed run is not release evidence.
+
+The current candidate is `0371c11bb2cb1a18161a561bae9296b10a166c2d`.
+Its tree is identical to the macOS candidate
+`af9383943baf9faa09909249e4f5dfd753f1f88e`; both final snapshots are
+`f0dd64442c75740836a537d8223030853dd6e0c229f2f0bb9ab24edeac8c8b42`.
+The source-identity verifier retains 146 original macOS subsystem passes,
+eight recovery passes and the final repaired corpus checks. Linux retains
+150 original subsystem passes plus successful recovery of the four failed
+checks, using the existing four cache partitions and CI timeout allowance.
+The unchanged compiler/library evidence is kept under its original source
+identity. The original full LLVM corpus executed 196 other examples at O0/O3;
+the three procedural examples pass again after the library relocation.
+
+Final optimized-host runs passed exact example inventories, owning controls,
+`compiler_pipeline`, native O0/O3 smoke and performance checks on both platforms:
+macOS `run-3cf547b08cd34254bb3b19f3022d8290` and Linux
+`run-72c93a78fb874ac0b63db8f3486d287e` (GCC 14 Release), both pinned to LLVM
+23.1.6. Linux inventory recoveries are retained as
+`run-17e0d19abce944b7a7c2ad7116aa3b9e` and
+`run-8d35294945ca438d9d1b4761756538f6`. Assertions and corpus coverage were
+preserved. This is focused contributor evidence; normal required CI, queue
+integration and post-integration full validation remain mandatory.
+
+Fresh measurements on the audited source retain the earlier cost conclusion.
+On macOS, HTML runtime medians were within 1.1% of equivalent handwritten
+construction at 1/4/16/64 children; on Linux they were within 0.5% at 4/64.
+Allocation counts and bytes matched exactly. The independent identity macro
+retained the same text/executable sizes, with runtime ratio 1.00008 and compile
+ratio 1.00289 on macOS. No speedup is claimed.
+
+| Audited 64-child client | Compile seconds, direct / macro | Peak RSS MiB, direct / macro | Text bytes, direct / macro |
+| --- | ---: | ---: | ---: |
+| macOS arm64 | 1.692 / 10.696 | 504.0 / 1173.2 | 53568 / 131036 |
+| Linux x64 | 3.335 / 18.986 | 356.7 / 728.3 | 56814 / 157230 |
+
+macOS compile figures are medians of three compilations; Linux records one
+compilation per variant. Runtime measurements use nine interleaved samples on
+macOS and three on Linux. The larger expansion still costs additional compile
+time, memory and code size; it is not evidence of constant-cost expansion.
+The earlier tables above remain historical measurements of `d850f5de` and are
+not relabelled as current results.
+
 ## Alternatives and tradeoffs
 
 - **Extend existing typed templates only:** retains familiar semantics but cannot parse an arbitrary captured token language or run a source-defined syntax generator. Keep them for their existing lazy-expression use cases.
@@ -380,6 +448,8 @@ Tests should extend existing owners where appropriate (`macro_result_parser`, `m
 Contributors run the reproducer/new cases, owning/cross-phase/tooling checks, `compiler_pipeline`, native smoke, and relevant platform/performance checks under GTI's current workflow. Integration CI and post-integration full validation retain their responsibilities; do not run redundant complete local suites to finish each phase. C++ parity is not a new-feature gate. Passing G1 supplies implementation-acceptance evidence for this bounded feature, subject to the owner's decision; release availability still requires the relevant release pipeline. No preview-channel publication is part of this plan.
 
 ## Decision record
+
+- 2026-11-05: the owner requested a generality audit after phase 3. PR #270 now fixes shared reference provenance and retained-loan handling exposed by unrelated expression macros, and corrects LLVM corpus selection and library example layout. The audit candidate `0371c11bb2cb1a18161a561bae9296b10a166c2d` has the focused Mac/Linux evidence and explicit source equivalence recorded above. Required CI and integration remain pending; this audit does not expand the accepted expression-only profile or claim exhaustive stability.
 
 - 2026-11-05: the owner explicitly requested phase 3 including the HTML demonstration. PR #270 contains the combined foundation and source library. The measured implementation uses immutable shared syntax joins with bounded virtual output and charged materialization; joins charge nodes and edges rather than copying every prefix. The API adds `string_literal(value, origin)` to quote text safely into one token. The HTML client reserves child storage once and emits append calls with at most eight children each, avoiding the compile-time cost of large generated ownership closures. Local examples, markup/type/access/move/borrow failures, editor queries and installed external-library/cache tests pass. The corrected exact candidate is `d850f5de3b2378b371aa4ebe0ef6ec514cfbd204`. On macOS arm64 with LLVM 23 it passed all 49 focused subsystem checks, `compiler_pipeline`, native O0/O3 smoke, and both cost comparisons (run `run-a382c12d3f4e4087afc0e767a7663b46`). The same exact candidate passed all 48 registered Linux x64 subsystem checks, `compiler_pipeline`, native O0/O3 smoke and the HTML cost comparison (run `run-a01b62782a9a4faab2b610f35d443c4f`, GCC 14 Release host, LLVM 23.1.6). The optional Neovim syntax check is the extra macOS check. Together this satisfies the conjunctive G1 focused acceptance criteria; normal required CI and merge-queue integration are still pending, and this does not claim release availability. The first candidate caught and repaired a sorted-manifest violation and an explicit `<algorithm>` include required by GCC.
 
