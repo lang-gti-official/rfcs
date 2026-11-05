@@ -7,7 +7,7 @@
 | Created | 2026-11-05 |
 | Updated | 2026-11-05 |
 | Area | language |
-| Proposal | pending |
+| Proposal | https://github.com/lang-gti-official/rfcs/pull/1 |
 | Decision | pending |
 | Implementation | none |
 | Supersedes | none |
