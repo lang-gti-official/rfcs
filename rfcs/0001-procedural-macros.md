@@ -9,7 +9,7 @@
 | Area | language |
 | Proposal | https://github.com/lang-gti-official/rfcs/pull/1 |
 | Decision | pending |
-| Implementation | [Phase 1 — GTI PR #263](https://github.com/lang-gti-official/gti/pull/263); [Phase 2 — GTI PR #267](https://github.com/lang-gti-official/gti/pull/267); [Phase 3 — GTI PR #270](https://github.com/lang-gti-official/gti/pull/270) (G1 validation in progress) |
+| Implementation | [Phase 1 — GTI PR #263](https://github.com/lang-gti-official/gti/pull/263); [Phase 2 — GTI PR #267](https://github.com/lang-gti-official/gti/pull/267); [Phase 3 — GTI PR #270](https://github.com/lang-gti-official/gti/pull/270) (G1 focused acceptance passed; integration pending) |
 | Supersedes | none |
 | Superseded by | none |
 
@@ -239,6 +239,33 @@ HTML support. The unrelated identity-macro comparison produced the same 264 text
 bytes and 16,904-byte executable as direct code; its runtime median ratio was
 0.994 and compile ratio 1.010.
 
+Linux x64 confirmed the same allocation counts/bytes at 4 and 64 children,
+with runtime median ratios 1.000 and 1.0035 (three interleaved samples).
+At 64 children the direct/macro compile took 3.312 / 18.717 seconds, peak RSS
+was 358.0 / 724.8 MiB, and text size was 56814 / 157230 bytes. This confirms
+the compile-cost tradeoff on the second target, with no material runtime
+regression observed.
+
+The independent `twice_once!` example was also compiled at 1, 16 and 256
+invocations against its identical handwritten immediately invoked lambda
+structure on macOS, with three compilations and execution checks per variant:
+
+| Invocations | Compile ms, direct / macro | Peak RSS MiB, direct / macro | Macro staged-MIR requests / total ms |
+| ---: | ---: | ---: | ---: |
+| 1 | 108.75 / 111.24 | 86.75 / 88.34 | 1 / 2.686 |
+| 16 | 135.50 / 143.73 | 96.31 / 98.89 | 16 / 6.106 |
+| 256 | 2254.32 / 2331.82 | 810.42 / 814.75 | 256 / 65.834 |
+
+The staged-MIR timings are the final compilation's recorded trace durations;
+compile and RSS columns are medians. The growing ordinary function has its
+own compiler cost, shared by both variants. An initial pure-expression
+comparator duplicated the addition instead of reproducing the lambda; at
+256 sites it used 22.4 seconds / 17.3 GiB. That structurally different result
+is retained in the local evidence and is not used to claim a macro speedup.
+Cold/warm package-cache behavior and invalidation are checked separately by
+the external-library workflow tests. Full raw samples and commands are
+retained with the implementation PR's acceptance evidence.
+
 ## Alternatives and tradeoffs
 
 - **Extend existing typed templates only:** retains familiar semantics but cannot parse an arbitrary captured token language or run a source-defined syntax generator. Keep them for their existing lazy-expression use cases.
@@ -354,7 +381,7 @@ Contributors run the reproducer/new cases, owning/cross-phase/tooling checks, `c
 
 ## Decision record
 
-- 2026-11-05: the owner explicitly requested phase 3 including the HTML demonstration. PR #270 contains the combined foundation and source library. The measured implementation uses immutable shared syntax joins with bounded virtual output and charged materialization; joins charge nodes and edges rather than copying every prefix. The API adds `string_literal(value, origin)` to quote text safely into one token. The HTML client reserves child storage once and emits append calls with at most eight children each, avoiding the compile-time cost of large generated ownership closures. Local examples, markup/type/access/move/borrow failures, editor queries and installed external-library/cache tests pass. The corrected exact candidate is `d850f5de3b2378b371aa4ebe0ef6ec514cfbd204`. On macOS arm64 with LLVM 23 it passed all 49 focused subsystem checks, `compiler_pipeline`, native O0/O3 smoke, and both cost comparisons (run `run-a382c12d3f4e4087afc0e767a7663b46`). Linux x64 validation is still running; this record does not yet claim G1 completion, integration or release. The first candidate caught and repaired a sorted-manifest violation and an explicit `<algorithm>` include required by GCC.
+- 2026-11-05: the owner explicitly requested phase 3 including the HTML demonstration. PR #270 contains the combined foundation and source library. The measured implementation uses immutable shared syntax joins with bounded virtual output and charged materialization; joins charge nodes and edges rather than copying every prefix. The API adds `string_literal(value, origin)` to quote text safely into one token. The HTML client reserves child storage once and emits append calls with at most eight children each, avoiding the compile-time cost of large generated ownership closures. Local examples, markup/type/access/move/borrow failures, editor queries and installed external-library/cache tests pass. The corrected exact candidate is `d850f5de3b2378b371aa4ebe0ef6ec514cfbd204`. On macOS arm64 with LLVM 23 it passed all 49 focused subsystem checks, `compiler_pipeline`, native O0/O3 smoke, and both cost comparisons (run `run-a382c12d3f4e4087afc0e767a7663b46`). The same exact candidate passed all 48 registered Linux x64 subsystem checks, `compiler_pipeline`, native O0/O3 smoke and the HTML cost comparison (run `run-a01b62782a9a4faab2b610f35d443c4f`, GCC 14 Release host, LLVM 23.1.6). The optional Neovim syntax check is the extra macOS check. Together this satisfies the conjunctive G1 focused acceptance criteria; normal required CI and merge-queue integration are still pending, and this does not claim release availability. The first candidate caught and repaired a sorted-manifest violation and an explicit `<algorithm>` include required by GCC.
 
 - 2026-11-05: the owner explicitly requested implementation of phase 2. GTI PR #267 implements the MIR procedural request profile, source `std::syntax` operations, sealed expression checking, shared limits and snapshot-local successful reuse. Focused validation passed on the clean phase-2 candidate `31e577bcb5c6bbe1979a7eeac43c28c6b4272de2`; PR #267 is proceeding through normal required CI and merge-queue integration. This does not claim the phase-3 HTML gate has passed. The concrete API adds a checked `keyword` builder alongside literal/punctuation/identifier construction, and names validated spans `location` to avoid colliding with the `span` type. Initial configurable defaults are 65,536 nodes, 1,048,576 cumulative spelling bytes, 65,536 cumulative tokens and 256 group levels, plus the existing shared constant/macro limits. On macOS arm64 with LLVM 23, 40 focused subsystem checks, `compiler_pipeline`, and native scalar/ownership smoke at O0/O3 passed (remote run `run-c2218ecedcf6418abb90c75d48408e57`; full commands/evidence are recorded on PR #267). The source examples cover evaluate-once side effects, move-only cleanup, constexpr initializers and default arguments; owning tests also cover distinct same-spelled fresh bindings, target selection, recursion, cancellation and source syntax operations. An LLVM O3 identity-macro loop and its handwritten equivalent both produced 264 text bytes and 16,904-byte executables with no syntax/allocation operations in MIR. Nine interleaved samples gave medians 95.952 / 95.966 ms; three compiler samples gave medians 90.264 / 88.288 ms and peak RSS 98,844,672 / 99,401,728 bytes (direct / macro). No speedup is claimed. Shared Linux hosts lack the new LLVM 23 pin, so the required cross-platform PR/queue gate remains mandatory; earlier Linux LLVM22 development evidence is not current-pin evidence. Broader library/HTML scaling and final feature acceptance remain phase 3.
 
@@ -362,7 +389,7 @@ Contributors run the reproducer/new cases, owning/cross-phase/tooling checks, `c
 
 - 2026-11-05: the owner requested a three-phase implementation plan in this repository, with the first acceptance gate after phase 3 centered on a small `html!({...})` demonstration.
 - Issue #251 records agreement on `#macro(proc)`, typed syntax, ordinary calls, and preservation of existing typed macros. It leaves the syntax API and staging details open.
-- The owner authorized phases 1 and 2 of this bounded expression-only, single-group, imported-definition design. The overall feature remains pending its first acceptance gate after phase 3; the proposal status remains `draft` until that explicit decision.
+- The owner authorized implementation of all three phases of this bounded expression-only, single-group, imported-definition design. G1 focused implementation evidence now passes on the combined phase-3 candidate. The proposal status remains `draft` until the owner explicitly accepts the RFC; implementation integration and release remain separate states.
 
 ## References
 
