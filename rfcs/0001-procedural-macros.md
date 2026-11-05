@@ -5,7 +5,7 @@
 | Status | draft |
 | Authors | @gti-language-official (proposal requested by the owner; drafted with Codex) |
 | Created | 2026-11-05 |
-| Updated | 2026-11-05 |
+| Updated | 2026-11-06 |
 | Area | language |
 | Proposal | https://github.com/lang-gti-official/rfcs/pull/1 |
 | Decision | pending |
@@ -84,7 +84,7 @@ auto page = html!({
 });
 ```
 
-The module exports `html` using GTI's ordinary module rules. Qualified invocation, such as `web::html!({...})` for a macro declared in that namespace, is covered too. The owner selected `!` during phase-1 implementation to make opaque input explicit. No `#expand` or HTML compiler hook is introduced; existing typed macros retain ordinary call spelling.
+The module exports `html` using GTI's ordinary module rules. Qualified invocation, such as `web::html!({...})` for a macro declared in that namespace, is covered too. The owner selected `!` during phase-1 implementation to make opaque input explicit. No `#expand` or HTML compiler hook is introduced; the owner subsequently unified all macro calls under `!` (2026-11-06, GTI PR #279). Typed calls use `name!(...)` or `name<T>!(...)`; their evaluation rules remain intact.
 
 The macro converts static tags/attributes into literal arguments to ordinary library operations. Each interpolation is parsed as GTI syntax and spliced into the generated expression. The demo library owns its node/text storage; a returned page cannot retain an unchecked borrow into a temporary or the macro executor. Rendering a profile named `Ada & Lin` produces this test result:
 
@@ -109,7 +109,7 @@ Markup structure is checked while compiling; rendering and copying runtime text 
 
 The lexer keeps GTI lexical rules. The parser recognizes an explicit `name!({...})` candidate containing a qualified/unqualified name and a balanced braced token group. It never decides from the contents whether this is HTML or ordinary GTI. Source extent, delimiters, token kinds, punctuation adjacency, and trivia boundaries must survive capture.
 
-Semantic lookup requires the name before `!` to select a procedural macro and passes its captured group without evaluating or type-checking embedded expressions. An ordinary callable or a shadowing local cannot acquire procedural behavior through `!`; it receives a diagnostic. Ordinary calls and existing typed macros keep their original parsing and evaluation rules. A procedural declaration called without `!` receives a diagnostic. Regression tests cover ordinary braced calls, shadowing, ambiguity and invalid categories.
+Semantic lookup selects the macro kind before argument analysis. A procedural declaration receives its captured group without evaluating or type-checking embedded expressions; a typed declaration uses structured expression arguments for its existing substitution rules. An ordinary callable or a shadowing local cannot acquire procedural behavior through `!`; it receives a diagnostic. Ordinary function calls keep their syntax. Typed macros now also require `!`, while retaining their signatures and evaluation rules. A procedural declaration called without `!` receives a diagnostic. Regression tests cover ordinary braced calls, shadowing, ambiguity and invalid categories.
 
 Unbalanced GTI delimiters and invalid GTI lexemes remain frontend errors. Balanced but mismatched markup tags are the library's responsibility. In particular, this is token-based syntax, not arbitrary raw HTML: quoted text and GTI comment/string rules apply. Source-loading directives must not run merely because their tokens occur inside the captured group; the capture/source-loading boundary must either retain such spellings inertly or reject them with a located diagnostic. The first profile rejects directives inside captured input and generated output.
 
@@ -185,7 +185,7 @@ The formatter preserves opaque input groups without applying GTI expression form
 
 ## Compatibility and migration
 
-Non-procedural typed macros keep their current signatures, overload rules, lazy expression forcing, scoped returns, caller/definition hygiene, tracked-caller behavior, and cleanup. Preserve their existing tests, including fresh callable identity and expression-text provenance. The new syntax is additive and does not redefine `#define`, assertions, or ordinary function argument evaluation.
+Non-procedural typed macros keep their current signatures, overload rules, lazy expression forcing, scoped returns, caller/definition hygiene, tracked-caller behavior, and cleanup. Preserve their existing tests, including fresh callable identity and expression-text provenance. The procedural facility does not redefine `#define` or ordinary function argument evaluation. The accepted unified-marker revision changes typed macro call spelling (including assertions); it leaves their meaning unchanged and supplies migration diagnostics.
 
 [ADR 030](https://github.com/lang-gti-official/gti/blob/2ec7512ecbc42e736b3d984efbff6304de67be21/docs/decisions/030-deferred-statement-helpers.md) remains the authority for non-procedural templates. This RFC proposes an additional explicitly selected mode; adoption should record that distinction in the ADR and update implemented language/architecture documentation as the feature lands. Historical plans remain in GTI, linked to this RFC.
 
@@ -341,7 +341,7 @@ not relabelled as current results.
 - **Run native proc-macro plugins:** can reuse broad host libraries, but introduces host ABI, bootstrap/cross-compilation, isolation, reproducibility, and crash boundaries. Reusing verified MIR is the chosen first direction.
 - **Create a new compile-time AST interpreter:** short-term convenience would duplicate GTI execution rules. Extend the existing staged engine and its explicit capability profile instead.
 - **Return unconstrained tokens initially:** permits more expansion positions, but broadens grammar/staging/injection rules. The proposed `expr` result gives a useful end-to-end slice and leaves later categories explicit.
-- **Keep ordinary invocation spelling:** was the initial direction in #251. The owner revised it on 2026-11-05 to use `!` for procedural macros. Explicit capture avoids reparsing ordinary calls and lets source loading reject directives only inside procedural input. Existing typed macros are unchanged.
+- **Keep ordinary invocation spelling:** was the initial direction in #251. The owner revised it on 2026-11-05 to use `!` for procedural macros. Explicit capture avoids reparsing ordinary calls and lets source loading reject directives only inside procedural input. The owner later selected the same marker for typed macro calls on 2026-11-06, keeping their evaluation semantics unchanged.
 - **Implement HTML in the compiler:** might make one demo easy but fails the general facility requirement. The unrelated macro and library-owned grammar are mandatory.
 
 ## Unresolved questions
@@ -448,6 +448,8 @@ Tests should extend existing owners where appropriate (`macro_result_parser`, `m
 Contributors run the reproducer/new cases, owning/cross-phase/tooling checks, `compiler_pipeline`, native smoke, and relevant platform/performance checks under GTI's current workflow. Integration CI and post-integration full validation retain their responsibilities; do not run redundant complete local suites to finish each phase. C++ parity is not a new-feature gate. Passing G1 supplies implementation-acceptance evidence for this bounded feature, subject to the owner's decision; release availability still requires the relevant release pipeline. No preview-channel publication is part of this plan.
 
 ## Decision record
+
+- 2026-11-06: the owner explicitly requested “adopt ! Across all macros.” [GTI PR #279](https://github.com/lang-gti-official/gti/pull/279) implements required `name!(...)`, `namespace::name!(...)`, and `name<T>!(...)` invocation spelling for typed macros as well as procedural macros. Declarations and forcing, overload, hygiene, scoped-return and cleanup rules are unchanged. A missing marker receives a targeted insertion fix. This supersedes the earlier decision to retain ordinary typed-call spelling; implementation validation and integration are pending.
 
 - 2026-11-05: the owner requested a generality audit after phase 3. PR #270 now fixes shared reference provenance and retained-loan handling exposed by unrelated expression macros, and corrects LLVM corpus selection and library example layout. The audit candidate `0371c11bb2cb1a18161a561bae9296b10a166c2d` has the focused Mac/Linux evidence and explicit source equivalence recorded above. Required CI and integration remain pending; this audit does not expand the accepted expression-only profile or claim exhaustive stability.
 
