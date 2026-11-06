@@ -16,6 +16,11 @@ class CatalogTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name) / 'repository'
         shutil.copytree(SOURCE, self.root, ignore=shutil.ignore_patterns('.git', '__pycache__'))
+        # Tests build their own catalog; `rfcs.py check` validates the real one.
+        for path in (self.root / 'rfcs').glob('*.md'):
+            if path.name != 'README.md':
+                path.unlink()
+        (self.root / 'rfcs/README.md').write_text(rfcs.index_text([]), encoding='utf-8')
 
     def new(self, slug='example'):
         return rfcs.create(self.root, slug, 'Example feature', '@author', 'language')
