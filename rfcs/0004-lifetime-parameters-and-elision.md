@@ -406,6 +406,24 @@ Adding/changing a borrowed field may change the type's declared contract just as
 other public field changes can. Compatibility is assessed on that normalized
 contract, not the absence of visible lifetime names in old source.
 
+A generic argument pattern may name a region projected from a reference type,
+for example `class expected<T&<borrowed>, E>`. The first unbound reference-region
+name declares a pattern-local lifetime binder, just as `T` declares a projected
+type binder. It is inferred from the actual reference argument and does not add
+a separately supplied lifetime argument to the class. Fields, aliases,
+constructors and accessors may then use `T&<borrowed>` to preserve that reference's
+complete shell rather than creating unrelated anonymous regions. Known outer
+regions, `static`, `_` and nested callable binders retain their own meanings;
+a single pattern name cannot bind both a type and a lifetime.
+
+Region names and relationships are not specialization dispatch keys. Select the
+family by its ordinary type/value shape, retain the actual regions, and prove
+that family's formation requirements. Repeated projected names express one
+relationship to check; they do not select another overload when that check
+fails. A callable pattern must also retain the scope of any matched
+`for<lifetime ...>` binder. An invocation region cannot escape into a free stored
+field merely because a generic type parameter captured part of that signature.
+
 ### LT-6. Bounds and static storage
 
 Propose `outlives<a, b>` in a `requires` clause to mean region `a` covers all
@@ -700,9 +718,11 @@ own design is accepted and must preserve the stated extension boundaries.
 
 ## Implementation plan
 
-No slice is implemented or authorized by this draft. Track later execution in
-GTI with links back here; do not duplicate an implementation roadmap here as a
-claim of completion.
+Draft status does not itself authorize implementation. The owner's later
+implementation authorization is recorded below, and ongoing execution is
+tracked in [GTI PR 302](https://github.com/lang-gti-official/gti/pull/302).
+The implementation remains incomplete; document checks and individual passing
+slices are not evidence that all RFC acceptance criteria have been met.
 
 | Slice | Coherent outcome and prerequisites |
 | --- | --- |
@@ -780,6 +800,14 @@ separate from draft, accepted and implemented status.
   slots remain declaration-derived; checked initializer-list provenance may
   infer constructor relationships into those slots without changing their arity
   or silently weakening explicitly named owner-region contracts.
+- **2026-11-07, implementation refinement:** a named region on a generic
+  reference argument pattern is a projected binder, separate from public
+  generic arity. Preserve the actual reference shell explicitly in nested
+  storage and accessors, including the standard-library `expected` reference
+  specialization. Independently scoped callable binders must be retained when
+  such patterns contain function signatures. These are implementation design
+  refinements under the owner's execution authorization, not a new acceptance
+  or release declaration.
 - **Pending:** complete semantic/compatibility evidence and a durable formal
   acceptance record. The proposal remains a draft until its Decision field is
   updated through the repository's decision process; it is not marked implemented.
