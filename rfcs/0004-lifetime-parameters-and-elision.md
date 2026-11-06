@@ -9,7 +9,7 @@
 | Area | language |
 | Proposal | https://github.com/lang-gti-official/rfcs/pull/5 |
 | Decision | pending |
-| Implementation | none |
+| Implementation | https://github.com/lang-gti-official/gti/pull/302 (draft, in progress) |
 | Supersedes | none |
 | Superseded by | none |
 
@@ -34,10 +34,11 @@ compatibility of lifetime-bearing types and declaration contracts. It does not
 depend on RFC 0003: references and ordinary borrowed records provide independent
 acceptance cases. Container examples require both proposals.
 
-**Status:** a draft requested by the owner, not an accepted specification or an
-implementation claim. The owner selected the notation and asked for this
-prerequisite relationship on 2026-11-06. Remaining semantic decisions below still
-require review; publication does not authorize implementation.
+**Status:** the design record remains a draft. After requesting this proposal,
+the owner explicitly requested end-to-end implementation with two subagents;
+that work is tracked in the draft implementation PR above. Remaining semantic
+and compatibility obligations are still being resolved. Neither this document
+nor the implementation PR claims that the feature is complete or released.
 
 ## Motivation and goals
 
@@ -298,14 +299,17 @@ The following fragments extend, rather than replace, GTI's existing grammar:
 
 ```text
 lifetime_parameter = "lifetime" IDENTIFIER
-lifetime_argument  = IDENTIFIER | "_" | "static"
+lifetime_argument  = IDENTIFIER | "_" | "static" | "this"
 reference_type     = existing_reference_type [ "<" lifetime_argument ">" ]
 ```
 
 In `existing_reference_type`, `T&` is read-only and `mut T&` is mutable. The new
 argument attaches to that reference, so `mut View<a>&<b>` separates the stored
-view's region from the reference to its shell. Existing `T&&` move forms are not
-redefined; whether explicit regions are needed there is an acceptance question.
+view's region from the reference to its shell. `this` names the receiver borrow
+inside a nonstatic method contract. Existing restricted `T&&` move declarations
+retain their meaning and do not introduce another reference-shell region;
+`T&&<a>` is rejected. Lifetime arguments carried inside the moved type remain
+part of that type's checked contract.
 
 Lifetime parameters are a third generic parameter kind alongside GTI's existing
 type/value forms. They are permitted on functions, classes/structs, aliases and
@@ -360,9 +364,9 @@ Resolve declaration elision before checking its implementation:
 4. Existing type arguments keep their lifetime relationships. Elision does not
    invent new independent lifetimes inside an opaque generic `T`.
 
-Receiver binding syntax for explicitly relating its region to other inputs is
-an open acceptance item. Simple receiver elision and explicit stored-region
-returns do not require that syntax to be guessed in this draft.
+Use `this` to name the receiver borrow explicitly: `T&<this>`, `View<this>`, or
+`requires outlives<this, a>`. It is reserved for that context, not a generic
+parameter that can be rebound. Stored external regions remain separately named.
 
 Exported functions, concept operations, virtual methods, external declarations
 and callable type signatures use a stable declared or mechanically elided
@@ -488,9 +492,12 @@ native representation while changing the lifetime contract is not conformance.
 A callable that works for *every fresh input lifetime* differs from one fixed to
 a surrounding region. The model must represent both. Lifetime binders on named
 function declarations already provide the former; first-class callable types
-need equivalent higher-ranked quantification. A candidate binder is
-`for<lifetime a> ...` within a callable type, but its exact placement and
-interaction with GTI callable syntax remain an explicit acceptance blocker.
+need equivalent higher-ranked quantification. The selected spelling places the
+binder before the complete callable type:
+`for<lifetime a> int&<a>(int&<a>)`. A closure's fixed environment regions are
+separate from its per-invocation quantified regions. Concept/virtual conformance,
+closure capture composition and erased-callable compatibility still require
+their complete acceptance evidence.
 Do not ship callable erasure by dropping the quantifier or inventing another
 borrow attribute. Ordinary callback calls should infer lifetime instantiations.
 
@@ -672,10 +679,12 @@ acceptance, resolve these semantic/compatibility gates explicitly:
 2. Exact eligibility for private body-inferred helpers and migration of current
    exported body-inferred contracts. Stable interfaces must remain inspectable
    without bodies.
-3. Explicit naming of the method receiver's region when it must be related to
-   another input; treatment of `T&&` without changing move/reference semantics.
-4. Higher-ranked callable binder placement, concept/virtual conformance and
-   erased-callback compatibility. Do not defer these by discarding obligations.
+3. Receiver-region composition and move compatibility evidence. The selected
+   spelling is `this`; existing restricted `T&&` declarations do not receive
+   a reference-shell lifetime annotation.
+4. Concept/virtual conformance, closure environment versus invocation binders,
+   and erased-callback compatibility. The callable binder spelling is
+   `for<lifetime a> R(Args...)`; do not discard obligations at erasure.
 5. `outlives` integration with requirements, well-formedness implied bounds,
    overload resolution and lifetime-aware reflection/type identity.
 6. Variance and drop-use contracts for raw-storage/interior-mutation owners.
@@ -760,10 +769,20 @@ separate from draft, accepted and implemented status.
   system over proliferating relationship attributes, selected the illustrated
   `lifetime a` / `T&<a>` form, and requested this RFC with inference/elision keeping
   annotations out of most code. The owner also requested RFC 0003 depend on it.
-- **Pending:** review and acceptance of the complete semantic rules, unresolved
-  items and implementation scope. The proposal PR provides the durable draft
-  record; a future explicit decision must update the Decision field. No language
-  implementation or release is claimed.
+- **2026-11-06, implementation authorization:** the owner subsequently requested
+  end-to-end implementation by the primary agent and two subagents. Work is
+  recorded in [implementation PR 302](https://github.com/lang-gti-official/gti/pull/302).
+  This is authorization to implement, not evidence of completed validation.
+- **2026-11-06, implementation refinements:** use the reserved receiver region
+  `this`, the callable binder `for<lifetime a> R(Args...)`, and no explicit
+  lifetime on the existing restricted `T&&` move spelling. Keep fixed closure
+  environment regions distinct from per-invocation regions. Anonymous field
+  slots remain declaration-derived; checked initializer-list provenance may
+  infer constructor relationships into those slots without changing their arity
+  or silently weakening explicitly named owner-region contracts.
+- **Pending:** complete semantic/compatibility evidence and a durable formal
+  acceptance record. The proposal remains a draft until its Decision field is
+  updated through the repository's decision process; it is not marked implemented.
 
 ## References
 
