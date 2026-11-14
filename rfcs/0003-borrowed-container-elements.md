@@ -5,7 +5,7 @@
 | Status | draft |
 | Authors | @gti-language-official (with Claude) |
 | Created | 2026-11-06 |
-| Updated | 2026-11-06 |
+| Updated | 2026-11-14 |
 | Area | language |
 | Proposal | https://github.com/lang-gti-official/rfcs/pull/3 |
 | Decision | pending |
@@ -20,19 +20,20 @@ Let checked borrows live inside containers, so that
 `std::unordered_map<std::string_view, int>` compile and stay memory safe, with
 no runtime cost and no change to how a view is represented.
 
-The core change is one rule: a value's dependency set may **grow after
-construction**. Today a carrier's owners are fixed when it is built. Under this
-proposal, storing a borrowed value into an existing owner adds that value's
-dependencies to the owner, and every added owner stays protected until the
-container's last use. Function summaries carry the same fact across calls, and a
-trusted boundary lets source-defined storage declare what it holds.
+The central storage change is that a value's dependency set may **grow after
+construction**. Storing a borrowed value into an existing owner adds its actual
+owner dependencies, which remain protected for the required uses and cleanup.
+Lifetime-bearing types constrain which stores are permitted; checked body-flow
+facts track the actual owners involved. A trusted typed-storage boundary still
+has to establish what source-defined storage owns.
 
-**Lifetime syntax is an open prerequisite decision.** This draft specifies the
-semantic model and sketches an inferred surface with one small contract
-attribute. That surface may prove inadequate. The owner may decide that explicit
-lifetime syntax is a prerequisite to this RFC, and lifetimes may receive an RFC
-of their own, which this one would then depend on. The semantic rules here are
-written so that they hold under either outcome; see
+**Prerequisite: [RFC 0004, lifetime parameters with inference and
+elision](0004-lifetime-parameters-and-elision.md).** This draft now uses its
+`lifetime a`, `T&<a>` and borrowed-type arguments, with inference and elision for
+ordinary usage. It does not propose a new `stores` attribute. RFC 0004 must be
+accepted, and its relevant type, contract and storage obligations established,
+before this RFC's boundary/storage admission stages. Independent preparatory
+work remains subject to its own authorization and validation; see
 [the prerequisite decision](#prerequisite-decision-lifetime-syntax).
 
 This is a draft. Nothing here is implemented, and it changes no language
@@ -64,9 +65,11 @@ Success means the programs in the guide-level section compile and run, the
 listed unsound variants are rejected, and an unrelated user container gets the
 same behavior through the same rules.
 
-### Current evidence and limits
+### Historical evidence and current baseline
 
-Observed on nightly 0.493.3 (`df1692ea`) on 2026-11-06, using small compile
+The following table is historical evidence, not a current admission inventory.
+Re-run these probes on the selected implementation base before using a row as a
+remaining gap. Observed on nightly 0.493.3 (`df1692ea`) on 2026-11-06, using small compile
 probes:
 
 | Program shape | Today |
@@ -92,7 +95,8 @@ recursive fixed points, cleanup-aware dependency retention, and
 `R-READ-BORROW-CARRIERS`, `R-MUTABLE-STORED-BORROWS` and `R-DYNAMIC-VIEWS` record
 these as bounded, with reseating and storage transforms as gaps.
 
-Four obstacles remain, in decreasing order of depth:
+At that historical revision, four obstacles were identified, in decreasing
+order of depth (reassess each against the pinned implementation base):
 
 1. **Dependencies are fixed at construction.** The ownership specification keeps
    "assignment that would replace a carrier's dependency" rejected. A container
@@ -108,6 +112,26 @@ Four obstacles remain, in decreasing order of depth:
 4. **Text and reference carriers follow different models.** A class may hold
    `int&` from several owners, but text is limited to one owner per value.
 
+### Architecture baseline: RFC 0004 phase 2
+
+This revision targets [GTI PR #378](https://github.com/lang-gti-official/gti/pull/378),
+reviewed at commit [`865a30856`](https://github.com/lang-gti-official/gti/commit/865a30856cec3e677cb9ffc30425b4b7fd4883b1).
+At this revision the PR is open; its integration and exact successor must be
+checked before implementation. It removes semantic loan identity and flow,
+`HirLoan`/`HirBody::loans`, and `MirLoan::semanticLoan`. MIR derives loans,
+parents, carriers, source places and endpoints, and owns body-local borrowing,
+raw-access overlap findings and persistent-storage borrow checks.
+
+Semantics retains immutable, value-compared `BindingDependency` summaries for
+typing and signature/origin checks. Those summaries are not active loans or a
+second liveness engine. RFC 0003 must extend MIR's existing flow, not rebuild a
+semantic registry or make HIR carry semantic loan identities.
+
+PR #378 establishes this architectural baseline, not borrowed-container
+admission. Its reported validation is evidence for that refactor; it does not
+prove BC-1 through BC-16. The 2026-11-06 observations above and their attribute
+spelling remain historical. Implementations use RFC 0004 lifetime contracts.
+
 ## Non-goals
 
 - **Exclusive elements.** `std::vector<mut T&>`-style elements and mutable views
@@ -117,9 +141,9 @@ Four obstacles remain, in decreasing order of depth:
 - **Self-referential values.** A value cannot depend on its own root (BC-6).
 - **Per-element precision.** Dependencies belong to the whole root binding.
   Removing an element does not release its owner.
-- **Deciding lifetime syntax here.** This RFC records the decision point and its
-  consequences. If lifetimes are pursued, their syntax, variance, elision and
-  type-system rules belong to a separate RFC.
+- **Defining a second lifetime surface.** Syntax, variance, elision, bounds and
+  stable declaration contracts belong to prerequisite RFC 0004. This RFC must
+  compose with that model rather than introduce per-operation borrow attributes.
 - **Heterogeneous lookup.** A `Borrow`-style query that finds a `std::string` key
   from a `string_view` is a separate library proposal, though it is useful
   beside this work.
@@ -128,8 +152,11 @@ Four obstacles remain, in decreasing order of depth:
 
 ## Guide-level design
 
-All examples in this section require this proposal unless marked otherwise. The
-attribute spelling is a placeholder under the inferred surface.
+All examples in this section require this proposal unless marked otherwise.
+Explicit lifetime forms and omitted lifetime arguments also require RFC 0004.
+Hashing support and other container prerequisites remain part of this RFC's
+implementation plan; these snippets are not claims that today's toolchain accepts
+them.
 
 A container of views keeps every viewed owner borrowed:
 
@@ -184,38 +211,38 @@ line.clear();         // valid
 parts.size();
 ```
 
-A helper needs no annotation when its body is available:
+A stable helper states the relationship once; callers infer its arguments:
 
 ```gti
-void remember(mut std::vector<std::string_view>& out, std::string_view word) {
-  out.push_back(word);   // inferred summary: word flows into out
+void remember<lifetime a>(
+    mut std::vector<std::string_view<a>>& out,
+    std::string_view<a> word) {
+  out.push_back(word);
 }
 ```
 
-A declaration with no visible body needs a contract, because the compiler cannot
-read what it does:
+The mutable borrow of `out` is separately elided for the call. It does not last
+for the stored views' region `a`. Private helpers and local lambdas may use
+body inference under RFC 0004's eligibility rules; exported/opaque signatures
+must not silently infer a stronger relationship from their implementation.
+
+A concept operation uses the same lifetime arguments and checked conformance:
 
 ```gti
-concept view_sink<S> = requires(mut S& sink, std::string_view word) {
-  { sink.add(word) } -> void [[stores(word, sink)]];
+concept view_sink<S, lifetime a> {
+  void add(mut S& sink, std::string_view<a> word);
 };
 ```
 
-A trusted owner declares what its unsafe code does, and safe wrappers above it
-are inferred:
+This constrains the inputs an implementation must accept; it does not assert
+that every implementation actually stores the word. A concrete receiver's
+lifetime-bearing element types determine whether retaining it is legal.
 
-```gti
-[[stores(value, this)]]
-unsafe void append_value_unchecked(T value) mut { ... }
-```
-
-Under an explicit lifetime surface, the same helper would instead say which
-dependencies are related, in some form such as the following. **This spelling is
-illustrative only and is not proposed here.**
-
-```gti
-void remember<'a>(mut std::vector<std::string_view<'a>>& out, std::string_view<'a> word);
-```
+A generic owner accepts its declared element type `T`. A trusted low-level
+append operation can therefore retain an ordinary `T` without an extra `stores`
+annotation, but its raw storage still needs a verified live-element ownership
+and drop contract. The signature alone cannot prove which raw address belongs
+to the receiver. BC-11 and RFC 0004 LT-8 gate that boundary.
 
 ## Semantic rules
 
@@ -231,8 +258,11 @@ void remember<'a>(mut std::vector<std::string_view<'a>>& out, std::string_view<'
 
 ### Dependency flow
 
-**BC-1. Dependency sets are per-point facts.** `D(b)` is a flow-sensitive
-compile-time fact, not part of `b`'s type and not runtime state.
+**BC-1. Dependency sets are per-point facts.** `D(b)` tracks actual origins and
+access at a program point. Lifetime parameters separately occur in types under
+RFC 0004. These representations must agree: a type constrains permitted validity
+relationships, while `D(b)` conservatively covers actual retained owners. Neither
+is runtime state, and a lifetime name does not identify an owner.
 
 **BC-2. A retaining store widens.** Storing `x` into a place under root `b` sets
 `D(b) := D(b) ∪ D(x)`. This includes a store through a mutable reference whose
@@ -242,7 +272,9 @@ reference that may select among several roots widens every candidate.
 **BC-3. Whole-value replacement narrows.** Assigning to an exact local binding
 with no live reborrow sets `D(b) := D(x)`, after the old value's cleanup. A store
 through a reference is always a widening. Operations such as `clear`, `erase` or
-`pop_back` do not narrow.
+`pop_back` do not narrow. This flow update does not rebind an explicit universal
+lifetime or change an invariant borrowed container's declared element type;
+replacement must also satisfy RFC 0004's type and alias constraints.
 
 **BC-4. Joins union, and loops reach a least fixed point.** Owners come from the
 finite places of the enclosing body plus symbolic formal entries, so the
@@ -272,35 +304,39 @@ so the same declaration order is rejected.
 
 ### Function boundaries
 
-**BC-9. Flow summaries.** A function's summary lists edges `source -> target`,
-where `source` is a formal and `target` is a formal's referent or the receiver.
-At a call, each edge applies BC-2 to the actual arguments. Summaries are derived
-from concrete bodies as a least fixed point over recursive sets, following the
-existing text contract approach. A local's dependency reaching a target is an
-escape and is rejected in the callee.
+**BC-9. Flow summaries.** MIR-derived body summaries track source-to-target stores and
+actual origin dependencies, including recursive fixed points. A local's
+borrow escaping into caller-owned storage is rejected. These facts must obey
+RFC 0004's lifetime-bearing types and declaration constraints; they cannot equate
+unrelated explicit input lifetimes merely because a body attempts a store.
+At opaque/public calls, use the declared contract and conservatively preserve
+all permitted dependencies rather than relying on private body precision.
 
-**BC-10. Declared contracts.** Where no body can be read, namely virtual calls,
-concept operations and erased callables, a store requires a declaration. Absent
-one, the current rule applies: the argument must be ownerless. A safe body's
-derived summary must be a subset of what it declares. Multi-origin result
-contracts, already recorded as a follow-up in the concept specification, extend
-`[[borrowed_from]]` in the same way so that a returned container can depend on
-several formals. Which surface expresses these contracts is the
-[prerequisite decision](#prerequisite-decision-lifetime-syntax).
+**BC-10. Declared contracts.** Functions, concepts, virtual operations and erased
+callables use RFC 0004's parameter/bound/elision model. Stored and incoming
+regions are related through the element types and signature, as in `remember`
+above. Multi-origin results use shared or distinct named regions according to
+the intended relationship. Implementations must satisfy their declared
+quantification. There is no new `stores` attribute or competing public summary
+language. Do not reintroduce the retired `borrowed_from` surface; use lifetime syntax.
 
 ### Storage and unsafe code
 
-**BC-11. Tracked storage.** A raw store of a dependency-carrying value stays
-rejected outside an unsafe function that declares a matching store contract.
-Inside one, unsafe code may place the value in raw memory, and the author takes
-on the obligation that the declaration is truthful. Safe code above it is
-inferred through ordinary composition, so only the lowest storage layer declares
-anything. Target `this` or a formal only: a raw pointer cannot be a target,
-because it has no tracked origin.
+**BC-11. Tracked storage.** A raw store of a dependency-carrying value remains
+rejected without a validated typed owner and matching lifetime-bearing element
+contract. The unsafe implementation must establish which live objects belong
+to that owner, their origin/access dependencies and their cleanup behavior.
+Safe wrappers compose those facts through ordinary generic types. A raw pointer
+alone cannot be the tracked owner because its address does not supply those
+ownership facts. RFC 0004 LT-8 defines the common model; the exact low-level
+storage interface is an unresolved admission gate, not replaced by a `stores`
+attribute or discharged merely by naming a lifetime.
 
-**BC-12. Reads from tracked storage are never ownerless.** A result of a
-dependency-capable type produced by an unsafe body inherits every input's
-dependencies unless a contract narrows it. This matters because
+**BC-12. Reads from tracked storage are never ownerless.** A dependency-capable
+result preserves the dependencies required by its declared lifetime-bearing
+type and verified storage/origin contract. Without a proven narrower mapping,
+retain all possible external dependencies; never infer ownerless merely because
+the physical load uses a raw pointer. This matters because
 [`rawMemoryText`](https://github.com/lang-gti-official/gti/blob/4c71f55c9c560ae6830829cd9ca466087d9bbe8c/src/compiler/mir_text_contracts.cpp#L28)
 currently treats text read from raw memory as inert. That is sound only while no
 dependent text can be stored there. Under this proposal an unchanged rule would
@@ -331,42 +367,111 @@ the caller cannot see from the call expression.
 
 ## Compiler and tooling design
 
-| Layer | Work |
+### One authority for executable borrowing
+
+| Layer | Responsibility |
 | --- | --- |
-| Parser, AST, grammar | Contract syntax under whichever surface is chosen |
-| Semantic analysis | Rule authority: retaining stores, summaries, contract validity, element admission, new diagnostics |
-| HIR | Preserve store events, summaries and proof records per concrete instance |
-| MIR | Dependency sets over the CFG in the ownership fixed point, plus an independent re-derivation in verification |
-| LLVM backend | No representation change expected, since loans erase; coverage entries for newly admitted shapes |
-| Standard library | Storage contracts, `storage_element`, `std::hashing` and ordering for `string_view` |
-| LSP, formatter, Tree-sitter | New syntax; diagnostics with related locations; editor cost budget |
+| Parser, AST, grammar | Reuse RFC 0004 lifetime syntax; no storage-specific attributes |
+| Semantics | Resolve element types, lifetime bounds/variance, selected declarations, structural admission and declared storage/cleanup obligations; retain value dependency summaries only where typing requires them |
+| HIR | Preserve typed operations, selected callees, ownership/effect contracts and source anchors; no loans, carrier registry or body-local loan solver |
+| MIR lowering | Derive actual places, loan identity, carrier ownership, retaining-store destinations and transfer events from typed operations |
+| MIR analysis and verification | Compute dependency updates, alias targets, joins, loops, call effects, liveness and cleanup protection; independently check storage and transfer claims against actual MIR operations |
+| LLVM | Erase proof information; preserve existing view representation and execute verified storage operations |
+| Standard library | Express generic storage ownership and element cleanup through the common contract; add view hashing/ordering and admit shared elements only after the storage gate passes |
+| Tooling | Surface MIR borrow diagnostics with store/call origins; preserve incomplete-source recovery and measure editor latency |
 
-The nearest precedent is the ownerless text contract. A proof is recorded by the
-semantic model, carried by `hir_lowering`, and re-derived by
-`verifyOwnerlessTextContracts` in the MIR verifier. This proposal follows that
-shape: semantics owns the rule, and MIR verification must not invent it. The
-[architecture table](https://github.com/lang-gti-official/gti/blob/4c71f55c9c560ae6830829cd9ca466087d9bbe8c/docs/architecture/overview.md)
-gives MIR "ownership/lifecycle fixed-point verification" and denies it "language
-rules missing from semantics/HIR". Because dependency sets are control-flow
-facts, the exact split is an open question.
+Language rules still have one specification. Placing executable borrow checking
+in MIR does not make code generation define those rules. Semantics checks
+whether declarations and types express a permitted relationship; MIR proves
+that actual execution respects it. An immutable semantic `BindingDependency`
+may inform typing, but must not become a per-point mutable dependency set,
+loan registry, carrier-activity list or competing escape/conflict checker.
 
-The implementation cost is large. `containsBorrowedState` has 584 references in
-`src/` at this revision, and many current rules are admissions of specific
-shapes. A general set representation has to replace those decisions rather than
-add another one. The single-owner text model is the largest such replacement.
+### MIR transfer and call contract
 
-Diagnostics need a chain of explanation. A conflict on `line` must point at the
-store that added the dependency, for example "`parts` depends on `line` because
-of this `push_back`", and through summaries where a helper performed the store.
-New codes follow the add-diagnostic process; none is assigned here.
+Extend the existing ownership/liveness analysis with BC-1's per-point `D(root)`.
+Keep external referent dependencies separate from loans on container storage:
+a copied element retains its external owners, while an element reference also
+protects the container's physical storage. Lifetime parameters constrain valid
+relations; they do not identify concrete owners or runtime addresses.
 
+For each retaining operation, MIR must establish the destination owner roots,
+the source dependency set and the relevant typed element path. Exact local
+replacement performs old-value cleanup before replacing the set; partial or
+aliased stores union it. Multiple possible destinations all widen. An unknown
+destination must not silently discard dependencies: reject the unsupported
+store until a validated storage contract identifies its owner.
+
+Joins union finite owner/path facts; loops and recursive call summaries reach a
+monotone fixed point. Use symbolic formal roots for summaries and substitute
+actual MIR places at calls. Do not unroll iterations or encode runtime elements
+as separate compile-time owners. Existing shared loan groups need explicit
+coverage: mutating one container must not overwrite facts still held by a copy,
+and replacing one carrier must not end another carrier's protection.
+
+Public/opaque calls use declared lifetime and storage/effect contracts, never a
+private body-derived relationship. Where a mutable receiver may retain an input
+under that contract, preserve all permitted input dependencies on normal and
+failure edges. Lifetime compatibility alone does not prove that an arbitrary raw
+address is receiver-owned. Concrete bodies must satisfy their declared contracts;
+local summary precision may only reduce conservatism where RFC 0004 permits it.
+
+### Typed-storage admission gate
+
+Before M4 changes any rejection or `storage_element` constraint, specify and
+validate a general storage contract with all of these facts:
+
+1. A typed owning root and its element type, including lifetime arguments;
+   allocation addresses alone do not establish ownership.
+2. Which slots are initialized and owned, and how construction, replacement,
+   relocation, extraction and destruction change that state.
+3. Which source dependencies each store retains and which dependencies each
+   load, copy or extraction returns. An unproved narrower mapping retains the
+   full permitted set; a raw load is never an ownerless escape hatch.
+4. Normal and failure effects, including partial initialization and rollback,
+   with exactly-once cleanup and dependency retention through observing drops.
+5. How these facts survive generic helpers, mutable aliases and opaque calls,
+   and which unsafe obligations the compiler cannot prove. Unsafe syntax alone
+   does not discharge the contract or make a safe wrapper sound.
+
+Choose and document the smallest general extension to GTI's existing typed
+allocation/storage machinery that expresses these facts. The exact API spelling
+is an implementation-design gate, not permission to remove the borrow-free
+restriction first. Prove it with an unrelated user-defined container and carrier;
+compiler recognition of `std::vector` or `std::unordered_map` is not a substitute.
+Admission, dependency-preserving reads and cleanup verification land together.
+
+### Verification and diagnostics
+
+Extend the existing MIR verifier and loan-liveness machinery. Independently
+reconstruct the relevant store/transfer facts from executable operations and
+validated contracts; do not trust an attached summary merely because lowering
+produced it. Do not build a second semantic borrow checker to provide that
+independence. Corrupt or omit owner witnesses, source sets, destination mappings,
+call effects and cleanup facts in focused verifier tests and require rejection.
+
+A conflict must identify the owner invalidation, the insertion that retained it,
+and any helper call that transported the dependency. Preserve source anchors
+through HIR/MIR; report a source borrow diagnostic rather than an ICE. Check
+all application bodies, including unreachable functions, consistently with
+#378's frontend. Raw-audit modes must not change mandatory borrow acceptance.
+Editor requests requiring borrow diagnostics must reach the owning MIR analysis;
+parse-recovered source must retain the current safe recovery boundary.
+
+Compiler entry points to inspect at the pinned baseline include
+`mir_body_lowering.cpp`, `mir_loan_liveness.cpp`, `mir_program_verifier.cpp`,
+`mir_storage_effects.cpp`, `mir_raw_audit.cpp`, `mir_borrow_audit_diagnostics.cpp`,
+`frontend.cpp` and the typed-storage library helpers. These are navigation hints,
+not a requirement to duplicate their facts or keep current file boundaries.
 C++ backend parity is not an acceptance gate.
 
 ## Compatibility and migration
 
-The change is additive. Programs that compile today keep their meaning, because
-each admitted shape is rejected today. Rejections that move or change wording
-need test updates.
+Container admission is intended to extend currently rejected shapes. The
+combined feature's source compatibility also depends on RFC 0004's lifetime
+migration and elision inventory; this RFC does not promise that every existing
+body-inferred public API remains unchanged. Rejections that move or change
+wording need test updates.
 
 This proposal revises several recorded boundaries, which stay in place until a
 decision changes them:
@@ -379,13 +484,14 @@ decision changes them:
 - `place-and-ownership-state.md` section 10 on dependency-reseating assignment.
 - The concepts specification's single-origin requirement result.
 
-It may also revise "No source lifetime parameters are introduced" in
-`ownership-and-lifetimes.md`, if the prerequisite decision goes that way. That
-would be a separate decision with its own RFC, not a side effect of this one.
+RFC 0004 proposes the explicit revision of "No source lifetime parameters are
+introduced" in `ownership-and-lifetimes.md`. That change is owned by its
+acceptance and migration work, not silently made by container admission.
 
-Inferred summaries make a function body part of its callers' checking. Editing a
-body can break a caller with no signature change. Existing inferred text
-contracts already behave this way, but containers make it far more common.
+Stable public/opaque contracts are determined by lifetime-bearing declarations
+and mechanical elision. Private body inference may still participate under RFC
+0004's rules. Preserve that distinction when migrating existing inferred text
+contracts and serializing compiler summaries.
 
 ## Safety and correctness
 
@@ -404,9 +510,9 @@ Specific risks reviewers should examine:
 - **Laundering through raw reads** (BC-12): the most concrete known hazard.
 - **Aliased stores:** a store through a mutable reference must reach the true
   root. A missed widening is a use-after-free with no diagnostic.
-- **Unsafe contracts:** a false `stores` declaration breaks containment. This is a
-  trusted obligation, so the set of declaring functions should stay small and
-  audited.
+- **Unsafe storage:** a false live-element ownership/drop contract breaks
+  containment even when lifetime types look correct. Keep the trusted boundary
+  small and audited, and verify reads as well as construction/destruction.
 - **Order of evaluation:** `v.push_back(v[0])` must finish the read before the
   exclusive receiver activates.
 - **Relocation:** growth moves elements inside the owner. Sets are per root, so
@@ -426,7 +532,7 @@ No measurements exist yet. These are expectations to check.
 - **Runtime:** none added by the rules, since loans erase. Programs that move from
   owned strings to views should allocate less, and that needs a benchmark.
 - **Code size:** new instantiations such as `std::vector<std::string_view>`.
-- **Compile time:** per-point sets over a body's owners, plus cross-function
+- **Compile time:** per-point sets over a body's owners, plus MIR-derived cross-function
   fixed points. Set size is bounded by owners in scope, but large generated
   bodies need measurement.
 - **Editor:** inferred summaries widen what a body edit invalidates. Per-edit
@@ -440,54 +546,40 @@ for reference.
 
 ### Prerequisite decision: lifetime syntax
 
-This is the largest open design question. It may be decided that explicit
-lifetime syntax is a **prerequisite** to this RFC, and lifetimes may end up with
-**an RFC of their own**, which this RFC would then depend on.
+**Drafting direction chosen on 2026-11-06:** this RFC depends on
+[RFC 0004](0004-lifetime-parameters-and-elision.md). The owner selected its
+`lifetime a` / `T&<a>` form with inference and elision keeping annotations out
+of ordinary use. Both documents remain drafts; this records the requested
+proposal direction, not acceptance of their complete semantics or permission
+to implement them.
 
-The pressure comes from function boundaries. In a body, dependency sets can be
-inferred. At a boundary with no readable body, the relationship must be written
-down somewhere, and a growing list of boundary needs points toward a general
-notation:
+The reason is the repeated need to relate arguments, retained elements, return
+values and interface operations. A growing set of attributes can become a less
+uniform lifetime language. A general contract notation could cover several
+relations, but explicit lifetime parameters make those relationships part of
+ordinary types and generic composition. Ordinary callers still infer arguments.
 
-- argument to receiver (`stores`);
-- result from several inputs (multi-origin `borrowed_from`);
-- two containers sharing an element dependency;
-- concept operations, virtual calls and erased callables;
-- stable public APIs, where a body edit must not silently change a contract;
-- element dependencies in a signature, such as a function returning
-  `std::vector<std::string_view>` whose owners matter to callers.
+RFC 0004 owns signature stability, elision, bounds, variance, quantified
+callables and compatibility. This RFC retains the storage/flow invariants,
+subject to those type rules. In particular, mutable access cannot reinterpret a
+container's element lifetime to admit a shorter-lived value. A helper with
+explicitly unrelated regions is rejected unless its declared bounds establish
+the required relation; body inference does not override that signature.
 
-Rust states all of these with one mechanism, because the lifetime is part of the
-type: `fn add<'a>(v: &mut Vec<&'a str>, s: &'a str)`. Each attribute above is a
-special case of that relation, so a growing attribute set may end up as a worse
-lifetime system.
+Sequencing:
 
-| | Inferred sets with contract attributes | Explicit lifetime syntax |
-| --- | --- | --- |
-| Ordinary code | No annotations | Elision would need to cover common cases |
-| Boundaries | One attribute per relation shape | One general notation |
-| Public API stability | Body edits can change inferred contracts | Signature states the contract |
-| Generics | Dependency is invisible to `T` | Can appear in the type |
-| Language surface | Small at first, may grow | Large, and affects types, generics and the existing "no lifetime parameters" position |
-| Existing code | Unaffected | Depends on elision and defaults |
+- RFC 0004 must be accepted and the relevant contract/type prerequisites
+  available before M3; its typed-storage ownership and drop obligations also
+  gate M4. Co-development may be planned only after the corresponding designs
+  are accepted.
+- M0-M2 may be considered as independently authorized, validated groundwork.
+  Their scope must not ship the abandoned attribute surface or claim that this
+  dependent RFC is complete.
+- M3 onward uses the common lifetime model. No new public `stores` or
+  `stores_borrows` attribute is staged as an interim feature.
 
-What survives either outcome: the semantic rules BC-1 to BC-8 and BC-11 to BC-16
-describe what a borrow in a container means. Lifetime syntax would replace how
-relations are **declared** (BC-9 and BC-10), and could reframe BC-1 by moving part
-of the fact into types. It would also add variance, which the inferred surface
-avoids and which Rust needs here: `&mut Vec<&'a str>` is invariant in `'a`, so a
-helper that pushes an unrelated `&'b str` is rejected.
-
-The consequences for sequencing are:
-
-- **If lifetimes are decided to be a prerequisite:** this RFC waits for that RFC
-  to be accepted. M0 to M2 of the implementation plan do not touch declarations,
-  so they can still proceed if the owner wants them to. M3 onward is rewritten
-  against the lifetime design, and the `stores` attribute is dropped.
-- **If they are not:** this RFC proceeds with the inferred surface, and the
-  attribute set stays small and closed.
-- **If undecided at M3:** implementation stops there rather than shipping an
-  attribute that a later lifetime design would have to deprecate.
+The original open decision and inferred-attribute sketch remain in repository
+history; the decision record below preserves why this draft changed direction.
 
 ### Other alternatives
 
@@ -515,26 +607,32 @@ remain valid. They do not provide the general capability.
 
 ## Unresolved questions
 
-1. **Lifetime syntax:** is it a prerequisite, and does it get its own RFC? This
-   gates M3 onward and is the first decision to make.
-2. **Exported APIs:** if inference stays, must exported functions declare their
-   summaries so that a body edit cannot silently break callers?
-3. **Phase split:** which part of the set computation runs in semantic flow
-   analysis, and which only in the MIR fixed point?
-4. **Granularity:** one set per root, or one per type parameter, so that a
-   `map<K, V>` with two borrowed parameters can release them separately? Does
-   `L-UP-16` projection precision compose with this?
-5. **Cleanup facts:** can BC-8 always be inferred from concrete instances, or does
-   an unsafe owner need a declaration like Rust's `may_dangle`?
+1. **Prerequisite readiness:** record the integrated successor of PR #378 and
+   probe the actual lifetime/type/interface capabilities needed by each slice.
+   RFC draft metadata and a merged architectural refactor alone do not establish
+   acceptance or prove the M3/M4 storage obligations.
+2. **Exported API migration:** apply RFC 0004's stable contracts to existing
+   body-inferred APIs and verify callers do not depend on hidden body precision.
+3. **Resolved phase split:** MIR owns executable dependency flow, summaries
+   and liveness. Semantics owns type/declaration constraints only. Choose the
+   exact MIR transfer representation during M1 without reopening dual ownership.
+4. **Initial granularity:** one conservative set per owning root, as BC-1
+   specifies. Preserve typed paths for checking and diagnostics; independent
+   release of key/value or per-element dependencies is outside this slice.
+5. **Cleanup facts:** how does the common model prove BC-8 for passive element
+   cleanup versus borrow-observing destructors? No unchecked `may_dangle` escape
+   is implied; opaque cleanup is conservative under RFC 0004.
 6. **Unsafe discharge through helpers:** `construct_value_at` takes a raw `T*`,
-   which cannot be a contract target under BC-11. Does the discharge pass through
-   unsafe helpers, or must the store sit directly in the declaring function?
+   which cannot establish ownership under BC-11. What typed owner/witness and
+   drop metadata must its caller and low-level helpers preserve?
 7. **Exclusive elements:** what is the path to `Vec<&mut T>`-like storage, given
    that dynamic-index identity is not modeled?
-8. **Text unification:** should the single-owner text model be replaced first, or
-   can sets be introduced alongside it for a transition?
-9. **Admission query:** what should the structural query replacing
-   `is_borrow_free` in `storage_element` be called and promise?
+8. **Text integration:** text and ordinary shared carriers must feed the same
+   MIR dependency-set rules. A staged migration may retain existing typing
+   representations, but must not introduce a separate text liveness solver.
+9. **Admission query:** choose the name during the storage gate. Its contract
+   admits structurally shared borrowed elements only under verified tracked
+   ownership; it must not weaken `is_borrow_free` or thread-transfer rules.
 10. **Scope of closed boundaries:** how soon must stored-reference targets (BC-16)
     open for real programs?
 
@@ -546,13 +644,57 @@ this plan is not an authorization to start.
 | Slice | Content | Depends on |
 | --- | --- | --- |
 | M0 | Treat a raw store of a text formal as a "requires ownerless" contract, so literal views enter containers. May land as an ordinary fix. | Nothing |
-| M1 | Dependency sets for local bindings: strong and weak updates, joins, reseating local views; multi-owner text | Phase split decision |
+| M1 | MIR dependency sets for local bindings: replacement versus widening, joins/loops, reseating local views and multi-owner text; no semantic loan flow | Integrated #378 baseline |
 | M2 | Fixed arrays of shared carriers (static size, no growth) | M1 |
-| — | **Decision gate: lifetime syntax.** Resolve question 1 before M3 | Owner decision |
-| M3 | Flow summaries and declared contracts, or their lifetime equivalent | M1, gate |
-| M4 | Tracked storage, BC-12 read rule, `std::vector` admission, shared in one change | M3 |
+| — | **Prerequisite gate: RFC 0004.** Accepted lifetime design and relevant type/interface prerequisites available | RFC 0004 L0-L4 as applicable |
+| M3 | MIR-derived store/effect summaries, recursive fixed points and actual-place substitution, checked against lifetime declarations and conservative opaque-call contracts | M1, RFC 0004 gate |
+| M4 | Tracked storage, BC-12 reads, cleanup proofs and shared `std::vector` admission in one coherent change | M3, RFC 0004 LT-8/L5 storage contract |
 | M5 | Associative containers: `std::hashing` and ordering for `string_view`, map and set admission | M4 |
 | M6 | Containers in fields and returned containers, multi-origin results | M4 |
+
+### Agent execution contract
+
+Start by recording the compiler commit, PR #378 integration status, existing
+storage API and a refreshed admission matrix for the historical probes. Compare
+with existing implementation before assigning work: do not rebuild a capability
+already delivered. If #378 is still pending, any dependent branch must identify
+that base and revalidate after integration; do not claim a mainline capability.
+
+Implement and validate the following boundaries in order:
+
+- **M1:** prove widening, exact replacement, branch/loop joins and copies sharing
+  dependencies with small local programs. Reject owner mutation/destruction and
+  self-dependency; ensure replacing one copy does not free another's owners.
+- **M2:** exercise fixed arrays, partial construction, moves and observing
+  destructors using the same rules. No raw dynamic-storage admission yet.
+- **M3:** prove a direct helper, a recursive helper, mutable receiver aliasing,
+  several potential destinations and an opaque declaration. Reject unrelated
+  explicit regions and insertion of callee-local borrows into caller storage.
+  Check both success and failure edges.
+- **M4:** first record the storage witness/API and its unsafe obligations. Then
+  deliver a small user container plus vector with checked insertion, growth,
+  reads, extraction and cleanup. Include passive and borrow-observing element
+  destructors, aliases, failure rollback and forged-proof rejection. Never land
+  permissive storage admission without matching read/extraction protection.
+- **M5:** validate hashing/ordering and map/set insertion, collision, rehash,
+  lookup and extraction with borrowed keys, including more than one owner.
+- **M6:** validate containers nested in fields and returned across lifetime
+  boundaries, with moves/copies and destruction. Preserve BC-16's explicit
+  exclusions until a separate scope decision changes them.
+
+For each slice report supported programs, intentional rejections, exact source
+revision, focused correctness/negative tests, LLVM O0/O3 execution, diagnostics
+and affected tooling checks. Use the implementation repository's current CI
+policy. Maintain the acceptance ledger there; document checks in this repository
+cannot substitute for compiler evidence. Measure representative optimized
+runtime/allocation behavior and compile-time/editor costs against the pinned
+baseline before claiming completion. Do not turn stale diagnostics into passing
+tests without establishing the intended rejection invariant.
+
+This revision authorizes no compiler changes by itself. Remaining storage API
+and cleanup-proof decisions must be made explicitly at their named gate; they
+are bounded implementation questions, not a reason to reinvent lifetime syntax
+or reintroduce semantic loan flow.
 
 Later proposals: exclusive elements, stored-reference targets, heterogeneous
 lookup. Implementation tracking belongs in the GTI repository and links back here.
@@ -560,16 +702,18 @@ lookup. Implementation tracking belongs in the GTI repository and links back her
 ## Validation and release criteria
 
 Positive cases: each guide-level program, run with cleanup checks; a borrow stored
-in a loop over a range; `v.push_back(v[0])`; a helper with an inferred summary; a
-recursive helper; failure during `push_back`; moved, cloned and swapped carriers;
+in a loop over a range; `v.push_back(v[0])`; an explicit lifetime helper and its
+inferred calls; eligible private/recursive helper inference; failure during
+`push_back`; moved, cloned and swapped carriers;
 a container declared before its owner.
 
 Negative cases: mutation, move and destruction of an owner while the container is
 live; a store through a mutable reference alias followed by owner invalidation; a
 value leaving by `pop_back` and outliving its owner; a local's view stored through
 a formal; self-dependency; stores to globals, captures and threads; a false
-contract on a safe body; a container of elements whose destructors read the
-dependency, declared before its owner.
+contract on a safe body; unrelated explicit lifetimes at insertion; mutation
+through an invariant container reference; a container of elements whose
+destructors read the dependency, declared before its owner.
 
 Generality: an unrelated user-defined container and carrier must reach all of the
 above without compiler knowledge of `std::vector`, `std::string_view` or
@@ -587,7 +731,7 @@ specification, and differences may be deliberate.
 | `clear()` then owner mutation, container used after | `E0502` | Rejected |
 | Whole-value replacement then owner mutation | Accepted | Accepted |
 | Copy an element out, push it back | Accepted | Accepted |
-| Helper pushing an unrelated lifetime | Rejected | Accepted with a summary under inference; depends on the lifetime decision |
+| Helper pushing an explicitly unrelated lifetime | Rejected | Rejected unless the declared lifetime bounds permit the store |
 | Two `&mut` to distinct owners in one `Vec` | Accepted | Deferred |
 | Two `&mut` to one owner | `E0499` | Deferred |
 
@@ -600,14 +744,32 @@ Document checks here establish none of this.
 
 ## Decision record
 
-No design decision yet. On 2026-11-06, while this draft was being written, the
-owner observed that lifetime syntax increasingly looks unavoidable and asked that
-this RFC record that lifetime syntax may be decided to be a prerequisite, and that
-lifetimes may receive their own RFC. That is direction for this draft, not an
-acceptance of either outcome.
+No complete design has been accepted.
+
+- **2026-11-14, owner-requested architecture alignment:** revise this draft for
+  [GTI PR #378](https://github.com/lang-gti-official/gti/pull/378), pinned above.
+  MIR owns executable dependency flow, loans, summaries and liveness. Semantic
+  typing summaries and HIR contracts carry no semantic loan identity. This
+  supersedes the earlier open phase split and semantic-flow implementation
+  sketch, while preserving the storage/read/cleanup gates and initial shared
+  element scope. The owner requested an implementation handoff document; this
+  update does not claim implementation or formal acceptance of the full RFC.
+
+- **2026-11-06, initial draft:** the owner asked that lifetime syntax be recorded
+  as a possible prerequisite with a separate RFC. The original draft left that
+  decision open and explored an inferred surface with store attributes.
+- **2026-11-06, subsequent owner direction:** the owner selected the illustrated
+  `lifetime a` / `T&<a>` form, asked for an inference/elision-first lifetime RFC,
+  and explicitly requested that this RFC depend on it. This revision therefore
+  names [RFC 0004](0004-lifetime-parameters-and-elision.md) as the prerequisite
+  and replaces the proposed store-attribute surface with its common contracts.
+- **Pending:** acceptance of the complete lifetime and container designs,
+  resolution of their remaining proof obligations and authorization of any
+  implementation work. Storing these drafts in the catalog is not acceptance.
 
 ## References
 
+- [RFC 0004: Lifetime parameters with inference and elision](0004-lifetime-parameters-and-elision.md): required lifetime/type-contract foundation; this RFC owns its dynamic storage consumer.
 - [Ownership, references and allocation](https://github.com/lang-gti-official/gti/blob/4c71f55c9c560ae6830829cd9ca466087d9bbe8c/docs/language/ownership-and-lifetimes.md): current carrier, view-field and rejection rules.
 - [Concepts](https://github.com/lang-gti-official/gti/blob/4c71f55c9c560ae6830829cd9ca466087d9bbe8c/docs/language/concepts.md): `borrowed_from`, `is_borrow_free`, and the multi-origin follow-up.
 - [Standard library](https://github.com/lang-gti-official/gti/blob/4c71f55c9c560ae6830829cd9ca466087d9bbe8c/docs/language/standard-library.md): container and owned-key contracts.
