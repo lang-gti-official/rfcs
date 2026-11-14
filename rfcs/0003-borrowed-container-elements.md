@@ -5,7 +5,7 @@
 | Status | draft |
 | Authors | @gti-language-official (with Claude) |
 | Created | 2026-11-06 |
-| Updated | 2026-11-06 |
+| Updated | 2026-11-14 |
 | Area | language |
 | Proposal | https://github.com/lang-gti-official/rfcs/pull/3 |
 | Decision | pending |
@@ -65,9 +65,11 @@ Success means the programs in the guide-level section compile and run, the
 listed unsound variants are rejected, and an unrelated user container gets the
 same behavior through the same rules.
 
-### Current evidence and limits
+### Historical evidence and current baseline
 
-Observed on nightly 0.493.3 (`df1692ea`) on 2026-11-06, using small compile
+The following table is historical evidence, not a current admission inventory.
+Re-run these probes on the selected implementation base before using a row as a
+remaining gap. Observed on nightly 0.493.3 (`df1692ea`) on 2026-11-06, using small compile
 probes:
 
 | Program shape | Today |
@@ -93,7 +95,8 @@ recursive fixed points, cleanup-aware dependency retention, and
 `R-READ-BORROW-CARRIERS`, `R-MUTABLE-STORED-BORROWS` and `R-DYNAMIC-VIEWS` record
 these as bounded, with reseating and storage transforms as gaps.
 
-Four obstacles remain, in decreasing order of depth:
+At that historical revision, four obstacles were identified, in decreasing
+order of depth (reassess each against the pinned implementation base):
 
 1. **Dependencies are fixed at construction.** The ownership specification keeps
    "assignment that would replace a carrier's dependency" rejected. A container
@@ -108,6 +111,26 @@ Four obstacles remain, in decreasing order of depth:
    which is where the text diagnostic fires.
 4. **Text and reference carriers follow different models.** A class may hold
    `int&` from several owners, but text is limited to one owner per value.
+
+### Architecture baseline: RFC 0004 phase 2
+
+This revision targets [GTI PR #378](https://github.com/lang-gti-official/gti/pull/378),
+reviewed at commit [`865a30856`](https://github.com/lang-gti-official/gti/commit/865a30856cec3e677cb9ffc30425b4b7fd4883b1).
+At this revision the PR is open; its integration and exact successor must be
+checked before implementation. It removes semantic loan identity and flow,
+`HirLoan`/`HirBody::loans`, and `MirLoan::semanticLoan`. MIR derives loans,
+parents, carriers, source places and endpoints, and owns body-local borrowing,
+raw-access overlap findings and persistent-storage borrow checks.
+
+Semantics retains immutable, value-compared `BindingDependency` summaries for
+typing and signature/origin checks. Those summaries are not active loans or a
+second liveness engine. RFC 0003 must extend MIR's existing flow, not rebuild a
+semantic registry or make HIR carry semantic loan identities.
+
+PR #378 establishes this architectural baseline, not borrowed-container
+admission. Its reported validation is evidence for that refactor; it does not
+prove BC-1 through BC-16. The 2026-11-06 observations above and their attribute
+spelling remain historical. Implementations use RFC 0004 lifetime contracts.
 
 ## Non-goals
 
@@ -281,7 +304,7 @@ so the same declaration order is rejected.
 
 ### Function boundaries
 
-**BC-9. Flow summaries.** Body-local summaries track source-to-target stores and
+**BC-9. Flow summaries.** MIR-derived body summaries track source-to-target stores and
 actual origin dependencies, including recursive fixed points. A local's
 borrow escaping into caller-owned storage is rejected. These facts must obey
 RFC 0004's lifetime-bearing types and declaration constraints; they cannot equate
@@ -295,7 +318,7 @@ regions are related through the element types and signature, as in `remember`
 above. Multi-origin results use shared or distinct named regions according to
 the intended relationship. Implementations must satisfy their declared
 quantification. There is no new `stores` attribute or competing public summary
-language. Existing `borrowed_from` compatibility follows RFC 0004.
+language. Do not reintroduce the retired `borrowed_from` surface; use lifetime syntax.
 
 ### Storage and unsafe code
 
@@ -344,35 +367,102 @@ the caller cannot see from the call expression.
 
 ## Compiler and tooling design
 
-| Layer | Work |
+### One authority for executable borrowing
+
+| Layer | Responsibility |
 | --- | --- |
-| Parser, AST, grammar | Reuse RFC 0004 lifetime syntax and elision; no container-specific contract attributes |
-| Semantic analysis | Rule authority: retaining stores, summaries, contract validity, element admission, new diagnostics |
-| HIR | Preserve store events, summaries and proof records per concrete instance |
-| MIR | Dependency sets over the CFG in the ownership fixed point, plus an independent re-derivation in verification |
-| LLVM backend | No representation change expected, since loans erase; coverage entries for newly admitted shapes |
-| Standard library | Storage contracts, `storage_element`, `std::hashing` and ordering for `string_view` |
-| LSP, formatter, Tree-sitter | New syntax; diagnostics with related locations; editor cost budget |
+| Parser, AST, grammar | Reuse RFC 0004 lifetime syntax; no storage-specific attributes |
+| Semantics | Resolve element types, lifetime bounds/variance, selected declarations, structural admission and declared storage/cleanup obligations; retain value dependency summaries only where typing requires them |
+| HIR | Preserve typed operations, selected callees, ownership/effect contracts and source anchors; no loans, carrier registry or body-local loan solver |
+| MIR lowering | Derive actual places, loan identity, carrier ownership, retaining-store destinations and transfer events from typed operations |
+| MIR analysis and verification | Compute dependency updates, alias targets, joins, loops, call effects, liveness and cleanup protection; independently check storage and transfer claims against actual MIR operations |
+| LLVM | Erase proof information; preserve existing view representation and execute verified storage operations |
+| Standard library | Express generic storage ownership and element cleanup through the common contract; add view hashing/ordering and admit shared elements only after the storage gate passes |
+| Tooling | Surface MIR borrow diagnostics with store/call origins; preserve incomplete-source recovery and measure editor latency |
 
-The nearest precedent is the ownerless text contract. A proof is recorded by the
-semantic model, carried by `hir_lowering`, and re-derived by
-`verifyOwnerlessTextContracts` in the MIR verifier. This proposal follows that
-shape: semantics owns the rule, and MIR verification must not invent it. The
-[architecture table](https://github.com/lang-gti-official/gti/blob/4c71f55c9c560ae6830829cd9ca466087d9bbe8c/docs/architecture/overview.md)
-gives MIR "ownership/lifecycle fixed-point verification" and denies it "language
-rules missing from semantics/HIR". Because dependency sets are control-flow
-facts, the exact split is an open question.
+Language rules still have one specification. Placing executable borrow checking
+in MIR does not make code generation define those rules. Semantics checks
+whether declarations and types express a permitted relationship; MIR proves
+that actual execution respects it. An immutable semantic `BindingDependency`
+may inform typing, but must not become a per-point mutable dependency set,
+loan registry, carrier-activity list or competing escape/conflict checker.
 
-The implementation cost is large. `containsBorrowedState` has 584 references in
-`src/` at this revision, and many current rules are admissions of specific
-shapes. A general set representation has to replace those decisions rather than
-add another one. The single-owner text model is the largest such replacement.
+### MIR transfer and call contract
 
-Diagnostics need a chain of explanation. A conflict on `line` must point at the
-store that added the dependency, for example "`parts` depends on `line` because
-of this `push_back`", and through summaries where a helper performed the store.
-New codes follow the add-diagnostic process; none is assigned here.
+Extend the existing ownership/liveness analysis with BC-1's per-point `D(root)`.
+Keep external referent dependencies separate from loans on container storage:
+a copied element retains its external owners, while an element reference also
+protects the container's physical storage. Lifetime parameters constrain valid
+relations; they do not identify concrete owners or runtime addresses.
 
+For each retaining operation, MIR must establish the destination owner roots,
+the source dependency set and the relevant typed element path. Exact local
+replacement performs old-value cleanup before replacing the set; partial or
+aliased stores union it. Multiple possible destinations all widen. An unknown
+destination must not silently discard dependencies: reject the unsupported
+store until a validated storage contract identifies its owner.
+
+Joins union finite owner/path facts; loops and recursive call summaries reach a
+monotone fixed point. Use symbolic formal roots for summaries and substitute
+actual MIR places at calls. Do not unroll iterations or encode runtime elements
+as separate compile-time owners. Existing shared loan groups need explicit
+coverage: mutating one container must not overwrite facts still held by a copy,
+and replacing one carrier must not end another carrier's protection.
+
+Public/opaque calls use declared lifetime and storage/effect contracts, never a
+private body-derived relationship. Where a mutable receiver may retain an input
+under that contract, preserve all permitted input dependencies on normal and
+failure edges. Lifetime compatibility alone does not prove that an arbitrary raw
+address is receiver-owned. Concrete bodies must satisfy their declared contracts;
+local summary precision may only reduce conservatism where RFC 0004 permits it.
+
+### Typed-storage admission gate
+
+Before M4 changes any rejection or `storage_element` constraint, specify and
+validate a general storage contract with all of these facts:
+
+1. A typed owning root and its element type, including lifetime arguments;
+   allocation addresses alone do not establish ownership.
+2. Which slots are initialized and owned, and how construction, replacement,
+   relocation, extraction and destruction change that state.
+3. Which source dependencies each store retains and which dependencies each
+   load, copy or extraction returns. An unproved narrower mapping retains the
+   full permitted set; a raw load is never an ownerless escape hatch.
+4. Normal and failure effects, including partial initialization and rollback,
+   with exactly-once cleanup and dependency retention through observing drops.
+5. How these facts survive generic helpers, mutable aliases and opaque calls,
+   and which unsafe obligations the compiler cannot prove. Unsafe syntax alone
+   does not discharge the contract or make a safe wrapper sound.
+
+Choose and document the smallest general extension to GTI's existing typed
+allocation/storage machinery that expresses these facts. The exact API spelling
+is an implementation-design gate, not permission to remove the borrow-free
+restriction first. Prove it with an unrelated user-defined container and carrier;
+compiler recognition of `std::vector` or `std::unordered_map` is not a substitute.
+Admission, dependency-preserving reads and cleanup verification land together.
+
+### Verification and diagnostics
+
+Extend the existing MIR verifier and loan-liveness machinery. Independently
+reconstruct the relevant store/transfer facts from executable operations and
+validated contracts; do not trust an attached summary merely because lowering
+produced it. Do not build a second semantic borrow checker to provide that
+independence. Corrupt or omit owner witnesses, source sets, destination mappings,
+call effects and cleanup facts in focused verifier tests and require rejection.
+
+A conflict must identify the owner invalidation, the insertion that retained it,
+and any helper call that transported the dependency. Preserve source anchors
+through HIR/MIR; report a source borrow diagnostic rather than an ICE. Check
+all application bodies, including unreachable functions, consistently with
+#378's frontend. Raw-audit modes must not change mandatory borrow acceptance.
+Editor requests requiring borrow diagnostics must reach the owning MIR analysis;
+parse-recovered source must retain the current safe recovery boundary.
+
+Compiler entry points to inspect at the pinned baseline include
+`mir_body_lowering.cpp`, `mir_loan_liveness.cpp`, `mir_program_verifier.cpp`,
+`mir_storage_effects.cpp`, `mir_raw_audit.cpp`, `mir_borrow_audit_diagnostics.cpp`,
+`frontend.cpp` and the typed-storage library helpers. These are navigation hints,
+not a requirement to duplicate their facts or keep current file boundaries.
 C++ backend parity is not an acceptance gate.
 
 ## Compatibility and migration
@@ -442,7 +532,7 @@ No measurements exist yet. These are expectations to check.
 - **Runtime:** none added by the rules, since loans erase. Programs that move from
   owned strings to views should allocate less, and that needs a benchmark.
 - **Code size:** new instantiations such as `std::vector<std::string_view>`.
-- **Compile time:** per-point sets over a body's owners, plus cross-function
+- **Compile time:** per-point sets over a body's owners, plus MIR-derived cross-function
   fixed points. Set size is bounded by owners in scope, but large generated
   bodies need measurement.
 - **Editor:** inferred summaries widen what a body edit invalidates. Per-edit
@@ -517,16 +607,18 @@ remain valid. They do not provide the general capability.
 
 ## Unresolved questions
 
-1. **Prerequisite readiness:** which accepted/implemented RFC 0004 slices
-   provide the type, interface and storage contracts needed by M3/M4? The
-   dependency is selected; acceptance of either complete design is pending.
+1. **Prerequisite readiness:** record the integrated successor of PR #378 and
+   probe the actual lifetime/type/interface capabilities needed by each slice.
+   RFC draft metadata and a merged architectural refactor alone do not establish
+   acceptance or prove the M3/M4 storage obligations.
 2. **Exported API migration:** apply RFC 0004's stable contracts to existing
    body-inferred APIs and verify callers do not depend on hidden body precision.
-3. **Phase split:** which part of the set computation runs in semantic flow
-   analysis, and which only in the MIR fixed point?
-4. **Granularity:** one set per root, or one per type parameter, so that a
-   `map<K, V>` with two borrowed parameters can release them separately? Does
-   `L-UP-16` projection precision compose with this?
+3. **Resolved phase split:** MIR owns executable dependency flow, summaries
+   and liveness. Semantics owns type/declaration constraints only. Choose the
+   exact MIR transfer representation during M1 without reopening dual ownership.
+4. **Initial granularity:** one conservative set per owning root, as BC-1
+   specifies. Preserve typed paths for checking and diagnostics; independent
+   release of key/value or per-element dependencies is outside this slice.
 5. **Cleanup facts:** how does the common model prove BC-8 for passive element
    cleanup versus borrow-observing destructors? No unchecked `may_dangle` escape
    is implied; opaque cleanup is conservative under RFC 0004.
@@ -535,10 +627,12 @@ remain valid. They do not provide the general capability.
    drop metadata must its caller and low-level helpers preserve?
 7. **Exclusive elements:** what is the path to `Vec<&mut T>`-like storage, given
    that dynamic-index identity is not modeled?
-8. **Text unification:** should the single-owner text model be replaced first, or
-   can sets be introduced alongside it for a transition?
-9. **Admission query:** what should the structural query replacing
-   `is_borrow_free` in `storage_element` be called and promise?
+8. **Text integration:** text and ordinary shared carriers must feed the same
+   MIR dependency-set rules. A staged migration may retain existing typing
+   representations, but must not introduce a separate text liveness solver.
+9. **Admission query:** choose the name during the storage gate. Its contract
+   admits structurally shared borrowed elements only under verified tracked
+   ownership; it must not weaken `is_borrow_free` or thread-transfer rules.
 10. **Scope of closed boundaries:** how soon must stored-reference targets (BC-16)
     open for real programs?
 
@@ -550,13 +644,57 @@ this plan is not an authorization to start.
 | Slice | Content | Depends on |
 | --- | --- | --- |
 | M0 | Treat a raw store of a text formal as a "requires ownerless" contract, so literal views enter containers. May land as an ordinary fix. | Nothing |
-| M1 | Dependency sets for local bindings: strong and weak updates, joins, reseating local views; multi-owner text | Phase split decision |
+| M1 | MIR dependency sets for local bindings: replacement versus widening, joins/loops, reseating local views and multi-owner text; no semantic loan flow | Integrated #378 baseline |
 | M2 | Fixed arrays of shared carriers (static size, no growth) | M1 |
 | — | **Prerequisite gate: RFC 0004.** Accepted lifetime design and relevant type/interface prerequisites available | RFC 0004 L0-L4 as applicable |
-| M3 | Body-flow summaries checked against RFC 0004 lifetime-bearing declarations and stable call contracts | M1, RFC 0004 gate |
+| M3 | MIR-derived store/effect summaries, recursive fixed points and actual-place substitution, checked against lifetime declarations and conservative opaque-call contracts | M1, RFC 0004 gate |
 | M4 | Tracked storage, BC-12 reads, cleanup proofs and shared `std::vector` admission in one coherent change | M3, RFC 0004 LT-8/L5 storage contract |
 | M5 | Associative containers: `std::hashing` and ordering for `string_view`, map and set admission | M4 |
 | M6 | Containers in fields and returned containers, multi-origin results | M4 |
+
+### Agent execution contract
+
+Start by recording the compiler commit, PR #378 integration status, existing
+storage API and a refreshed admission matrix for the historical probes. Compare
+with existing implementation before assigning work: do not rebuild a capability
+already delivered. If #378 is still pending, any dependent branch must identify
+that base and revalidate after integration; do not claim a mainline capability.
+
+Implement and validate the following boundaries in order:
+
+- **M1:** prove widening, exact replacement, branch/loop joins and copies sharing
+  dependencies with small local programs. Reject owner mutation/destruction and
+  self-dependency; ensure replacing one copy does not free another's owners.
+- **M2:** exercise fixed arrays, partial construction, moves and observing
+  destructors using the same rules. No raw dynamic-storage admission yet.
+- **M3:** prove a direct helper, a recursive helper, mutable receiver aliasing,
+  several potential destinations and an opaque declaration. Reject unrelated
+  explicit regions and insertion of callee-local borrows into caller storage.
+  Check both success and failure edges.
+- **M4:** first record the storage witness/API and its unsafe obligations. Then
+  deliver a small user container plus vector with checked insertion, growth,
+  reads, extraction and cleanup. Include passive and borrow-observing element
+  destructors, aliases, failure rollback and forged-proof rejection. Never land
+  permissive storage admission without matching read/extraction protection.
+- **M5:** validate hashing/ordering and map/set insertion, collision, rehash,
+  lookup and extraction with borrowed keys, including more than one owner.
+- **M6:** validate containers nested in fields and returned across lifetime
+  boundaries, with moves/copies and destruction. Preserve BC-16's explicit
+  exclusions until a separate scope decision changes them.
+
+For each slice report supported programs, intentional rejections, exact source
+revision, focused correctness/negative tests, LLVM O0/O3 execution, diagnostics
+and affected tooling checks. Use the implementation repository's current CI
+policy. Maintain the acceptance ledger there; document checks in this repository
+cannot substitute for compiler evidence. Measure representative optimized
+runtime/allocation behavior and compile-time/editor costs against the pinned
+baseline before claiming completion. Do not turn stale diagnostics into passing
+tests without establishing the intended rejection invariant.
+
+This revision authorizes no compiler changes by itself. Remaining storage API
+and cleanup-proof decisions must be made explicitly at their named gate; they
+are bounded implementation questions, not a reason to reinvent lifetime syntax
+or reintroduce semantic loan flow.
 
 Later proposals: exclusive elements, stored-reference targets, heterogeneous
 lookup. Implementation tracking belongs in the GTI repository and links back here.
@@ -607,6 +745,15 @@ Document checks here establish none of this.
 ## Decision record
 
 No complete design has been accepted.
+
+- **2026-11-14, owner-requested architecture alignment:** revise this draft for
+  [GTI PR #378](https://github.com/lang-gti-official/gti/pull/378), pinned above.
+  MIR owns executable dependency flow, loans, summaries and liveness. Semantic
+  typing summaries and HIR contracts carry no semantic loan identity. This
+  supersedes the earlier open phase split and semantic-flow implementation
+  sketch, while preserving the storage/read/cleanup gates and initial shared
+  element scope. The owner requested an implementation handoff document; this
+  update does not claim implementation or formal acceptance of the full RFC.
 
 - **2026-11-06, initial draft:** the owner asked that lifetime syntax be recorded
   as a possible prerequisite with a separate RFC. The original draft left that
