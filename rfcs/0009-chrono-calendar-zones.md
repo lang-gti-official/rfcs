@@ -91,7 +91,7 @@ void show_now() {
 }
 ```
 
-For the corresponding reading, that pattern produces `10:30:33 am on 20 Nov 2026`. It does not change the instant or the machine's zone. Use `try_load_default`, `try_locate`, `try_now`, `try_at` and `try_format` when these failures should be recovered. New calendar/timestamp/zone operations use `chrono::errc`; formatting uses `format_error` with a code and byte position. Existing duration and clock error categories remain separate.
+For the corresponding reading, that pattern produces `10:30:33 am on 20 Nov 2026`. It does not change the instant or the machine's zone. Use `try_load_default`, `try_locate`, `try_now`, `try_at` and `try_format` when these failures should be recovered. New calendar/timestamp/zone operations use `chrono::errc`; formatting uses `format_error` with a code and byte position. Existing duration and clock error categories remain separate. The `chrono::error` payload enum preserves calendar, clock, duration and formatting causes through registered `std::from` conformances for combined expected-returning functions.
 
 ### Calendar arithmetic and DST
 
@@ -176,7 +176,7 @@ Resource installation belongs to packaging/driver infrastructure: the bundle mus
 
 This is additive to current chrono and depends on settling RFC 0008/PR #647. Existing nanosecond clocks and casts retain their meanings. `days` adds a fixed unit; `calendar_days`, `months` and `years` cannot silently enter fixed-duration APIs.
 
-No exception-based API is introduced. Error enums distinguish invalid components, overflow, unknown zone, unavailable data, malformed/unsupported data, unsupported coverage, ambiguous/nonexistent local times, and invalid patterns. New calendar, timestamp and zone operations share `chrono::errc`; formatting adds byte-position information through `format_error`. Existing clock/duration error families remain unchanged.
+No exception-based API is introduced. Error enums distinguish invalid components, overflow, unknown zone, unavailable data, malformed/unsupported data, unsupported coverage, ambiguous/nonexistent local times, and invalid patterns. New calendar, timestamp and zone operations share `chrono::errc`; formatting adds byte-position information through `format_error`. Existing clock/duration error families remain unchanged, with a preserving `chrono::error` payload enum available for combined prefix-`?` propagation.
 
 Library release, IANA data release and resource-format version are separate. Applications may pin a bundle or choose a newer compatible bundle. Include required data notices and provenance. A release must document which resources distributors must ship.
 
