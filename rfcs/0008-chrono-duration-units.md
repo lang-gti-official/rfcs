@@ -9,16 +9,16 @@
 | Area | stdlib |
 | Proposal | https://github.com/lang-gti-official/rfcs/pull/9 |
 | Decision | pending |
-| Implementation | none |
+| Implementation | https://github.com/lang-gti-official/gti/pull/647 |
 | Supersedes | none |
 | Superseded by | none |
 
 ## Summary
 
 Extend `std::chrono` with strongly typed microseconds, milliseconds, seconds,
-minutes, and hours alongside existing nanoseconds. Add explicit checked
-`duration_cast<To>()` conversions. Integer conversions truncate toward zero;
-overflow returns an error. This is a proposed API, not an implemented feature.
+minutes, and hours alongside existing nanoseconds. Use one source-defined `duration<Unit>` family with named aliases. Add explicit
+`try_cast<To>()` and `cast<To>()` member conversions. Integer conversions truncate toward zero;
+`try_cast` reports overflow as an error; `cast` panics on overflow. This is a proposed API, not an implemented feature.
 
 ## Motivation and goals
 
@@ -35,7 +35,7 @@ not.
 
 ## Non-goals
 
-Calendar units, dates, time zones, formatting, sleeping, user-defined literals,
+Calendar units, dates, time zones, calendar formatting, sleeping, user-defined literals,
 floating-point representations, implicit cross-unit conversions, mixed-unit
 arithmetic, clock arithmetic extensions, and a general rational-number library
 are outside this proposal. Exact conversion and floor/ceil/round helpers can be
@@ -53,15 +53,15 @@ Proposed usage inside a function returning a compatible `expected`:
 import std.chrono;
 
 auto elapsed = std::chrono::milliseconds{int64_t(1500)};
-auto whole_seconds = ?std::chrono::duration_cast<std::chrono::seconds>(elapsed);
+auto whole_seconds = ?elapsed.try_cast<std::chrono::seconds>();
 // whole_seconds.count() == 1
 
 auto backwards = std::chrono::milliseconds{int64_t(-1500)};
-auto backwards_seconds = ?std::chrono::duration_cast<std::chrono::seconds>(backwards);
+auto backwards_seconds = backwards.cast<std::chrono::seconds>();
 // backwards_seconds.count() == -1
 
 auto timeout = std::chrono::minutes{int64_t(2)};
-auto timeout_ms = ?std::chrono::duration_cast<std::chrono::milliseconds>(timeout);
+auto timeout_ms = ?timeout.try_cast<std::chrono::milliseconds>();
 // timeout_ms.count() == 120000
 ```
 
@@ -69,11 +69,17 @@ Each type offers a zero-initializing default constructor, an explicit constructi
 from an `int64_t` tick count, and `count()` returning that count. Cross-unit
 construction is not implicit. The examples require implementation of this RFC.
 
-The proposed conversion result is `expected<To, duration_errc>` with
+`try_cast<To>()` returns `expected<To, duration_errc>` with
 `duration_errc::out_of_range`. Callers may propagate or inspect failure. A result
 that discards a fractional tick is successful; only an unrepresentable destination
 count is an overflow error. For example, converting the maximum signed 64-bit
 hours count to minutes fails, while converting it to hours succeeds unchanged.
+
+`cast<To>()` returns `To` directly and delegates to the same checked conversion.
+An overflowing result triggers a cleanup-preserving panic with caller location;
+in a required constant expression it produces a diagnostic. It never wraps.
+The member spelling avoids requiring partial explicit generic inference for a
+free `duration_cast<To, From>` function.
 
 ## Semantic rules
 
@@ -116,10 +122,14 @@ integer operations in `std.numeric`. Prefer shared source-defined conversion
 logic and ordinary generic constraints. Do not add hard-coded chrono names or
 unit conversions to the compiler.
 
-Preserve `nanoseconds` compatibility while deciding whether the shared internal
-representation should be a private generic type or several small nominal types.
-A public `duration<Rep, Period>` and ratio protocol are deferred unless review
-establishes a concrete need within this scope.
+Preserve `nanoseconds` construction, range, and count semantics while changing
+its identity to an alias of `duration<nanosecond_unit>`. Diagnostics and reflection
+may display the generic identity; document that change.
+The implementation exposes `duration<Unit>` for the six supported unit tags.
+`duration_unit` and `duration_type` combine structural operation requirements with
+closed constexpr type predicates. The private unit descriptor provides constexpr
+instance metadata; no unsupported generic static-member lookup is assumed.
+A public `duration<Rep, Period>` and arbitrary ratio protocol remain deferred.
 
 Before implementation, check that the chosen source representation and generic
 constraints work with existing constexpr support. Any missing general capability
@@ -189,21 +199,19 @@ all 36 conversions in programs that use only a few.
   user explicitly selected truncation toward zero as the default.
 - Reuse `clock_errc::out_of_range`: less API growth, but couples pure duration
   conversion to clock availability errors. A dedicated duration error is the
-  recommendation, pending review.
+  recommendation, selected for the implementation.
 
 ## Unresolved questions
 
-1. Confirm `duration_errc::out_of_range` rather than reusing `clock_errc`.
-2. Confirm the initial public surface is six named types, with any generic
-   representation private; decide its precise source representation after a
-   small compiler-capability audit.
-3. Confirm whether same-unit comparison operators belong in this first increment
-   or a separate arithmetic proposal. They are not required by the conversion
-   contract and are excluded from the proposed minimum scope.
+The 2026-11-20 implementation request resolves the initial choices in favor of
+`duration<Unit>`, `duration_errc::out_of_range`, both member casts, same-unit
+comparisons and checked arithmetic, and generic formatting. This revises the
+original draft's private representation and conversion-only minimum scope.
 
-Truncation toward zero is a user-selected rule. Full generic ratios, floating
-representations, arithmetic, and rounding helpers are deferred follow-up work,
-not hidden prerequisites to shipping the named units.
+Arbitrary rational units, floating representations, mixed-unit arithmetic and
+floor/ceil/round helpers remain separate design questions, not prerequisites.
+Current implementation validation and integration must still finish before
+claiming the feature is delivered.
 
 ## Implementation plan
 
@@ -216,11 +224,11 @@ not hidden prerequisites to shipping the named units.
    and existing clock regression coverage. Inspect optimized conversion code.
 4. Update canonical chrono docs, a runnable duration example, and standard-library
    inventories as needed. Update the reference website with discoverable unit
-   documentation and an individual `duration_cast` page, using its authoring
+   documentation and individual `try_cast` and `cast` pages, using its authoring
    rules. Link implementation PRs here only when actual work begins.
 
-No implementation has been started by this proposal, and no release date is
-promised. Implementation will use the compiler repository's current workflow.
+Implementation is in PR #647 under the compiler repository workflow. It has not
+been merged or released; its local validation and CI remain separate evidence.
 
 ## Validation and release criteria
 
@@ -244,10 +252,18 @@ design acceptance, or release readiness.
 
 ## Decision record
 
+2026-11-20 revision: after reviewing recent GTI generics, concepts, constexpr and
+error-conversion features, the owner requested implementation of the revised
+design with both `try_cast` and `cast`. The implementation and validation record
+is [PR #647](https://github.com/lang-gti-official/gti/pull/647). The RFC remains a
+draft proposal; this update does not claim a merged feature or release.
+
+
 The owner requested planning only on 2026-11-20 and selected integer conversion
 truncation toward zero, matching C++ duration_cast. This records a planning input,
-not acceptance of the complete API. No acceptance decision or implementation
-exists; a durable owner decision must be linked before changing draft status.
+not acceptance of the complete API. No standalone RFC acceptance decision has been recorded; retain draft status
+until that decision is linked. The subsequent implementation request is recorded
+above without claiming implementation completion.
 
 ## References
 
