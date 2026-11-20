@@ -9,17 +9,17 @@
 | Area | stdlib |
 | Proposal | https://github.com/lang-gti-official/rfcs/pull/10 |
 | Decision | pending |
-| Implementation | none |
+| Implementation | https://github.com/lang-gti-official/gti/pull/649 |
 | Supersedes | none |
 | Superseded by | none |
 
 ## Summary
 
-Extend `std::chrono` with validated Gregorian dates, civil times, calendar arithmetic, wide Unix timestamps, immutable IANA time-zone data, explicit daylight-saving resolution, and checked temporal formatting. Build on RFC 0008's duration family rather than replacing it. This is a proposed library design, not an implementation claim.
+Extend `std::chrono` with validated Gregorian dates, civil times, calendar arithmetic, wide Unix timestamps, immutable IANA time-zone data, explicit daylight-saving resolution, and checked temporal formatting. Build on RFC 0008's duration family rather than replacing it. Implementation was requested on 2026-11-20 with the API amendment recorded below. This document does not claim implementation or release completion.
 
 Keep three meanings distinct: an elapsed duration, a local calendar reading, and an instant on the timeline. A day as a duration is exactly 86,400 seconds; advancing a local calendar day preserves the clock reading and may cross an offset change. Months and years are calendar counts, not durations convertible to seconds without a starting date and zone.
 
-The audit indicates predominantly standard-library and data-distribution work. No broad compiler refactor is proposed. Small feasibility probes must confirm the exact generic, literal-validation and ownership combinations before acceptance.
+The audit indicates predominantly standard-library and data-distribution work. No broad compiler refactor is proposed. Implementation must validate the exact generic, literal-validation and ownership combinations. The original audit below remains historical evidence, not a claim that every proposed combination already compiled.
 
 ## Motivation and goals
 
@@ -81,39 +81,38 @@ import std.format;
 
 namespace c = std::chrono;
 
-expected<void, c::error> show_now() {
-  auto db = ?c::tzdb::load_default();
-  auto perth = ?db.locate("Australia/Perth");
-  auto now = ?c::timestamp::now();
-  auto local = ?perth.at(now);
-  auto text = ?c::try_format(local, "%I:%M:%S %P on %d %b %Y");
+void show_now() {
+  auto db = c::tzdb::load_default();
+  auto perth = db.locate("Australia/Perth");
+  auto now = c::timestamp::now();
+  auto local = perth.at(now);
+  auto text = c::format(local, "%I:%M:%S %P on %d %b %Y");
   std::println("{}", text);
-  return;
 }
 ```
 
-For the corresponding reading, that pattern produces `10:30:33 am on 20 Nov 2026`. It does not change the instant or the machine's zone. The proposed umbrella `chrono::error` preserves component causes through explicit `std::from` conformances.
+For the corresponding reading, that pattern produces `10:30:33 am on 20 Nov 2026`. It does not change the instant or the machine's zone. Use `try_load_default`, `try_locate`, `try_now`, `try_at` and `try_format` when these failures should be recovered. New calendar/timestamp/zone operations use `chrono::errc`; formatting uses `format_error` with a code and byte position. Existing duration and clock error categories remain separate.
 
 ### Calendar arithmetic and DST
 
 ```gti
-auto january = ?c::date::create(2027, 1, 31);
+auto january = c::date::create(2027, 1, 31);
 auto rejected = january.try_add(c::months(1)); // invalid resulting date
 auto february = ?january.try_add(c::months(1), c::month_roll::clamp);
 
-auto appointment = ?c::local_datetime::create(2026, 11, 20, 10, 30, 33);
-auto meeting = ?perth.resolve(appointment); // rejects ambiguity/gaps by default
+auto appointment = c::local_datetime::create(2026, 11, 20, 10, 30, 33);
+auto meeting = ?perth.try_resolve(appointment); // rejects ambiguity/gaps by default
 ```
 
 `date` and `local_datetime` offer `try_add(calendar_days)`, `try_add(months, month_roll)` and `try_add(years, month_roll)`. `timestamp::try_add(duration)` performs elapsed arithmetic. To advance a zoned appointment by a calendar day, get its local reading, advance it, then resolve it in the same zone with an explicit policy. This intentional composition makes DST handling visible.
 
-`zone.lookup(local)` returns an expected payload enum: unique instant, ambiguous earlier/later instants, or nonexistent-time gap information. `zone.resolve(local, policy)` provides the common selection operation. The default rejects ambiguity and gaps; options select the earlier/later instant for a fold or the next valid reading for a gap. “Next valid” means the transition boundary, not preserving minutes by shifting a whole gap. A separate shift policy can be considered later.
+`zone.try_lookup(local)` returns an expected payload enum: unique instant, ambiguous earlier/later instants, or nonexistent-time gap information. `zone.try_resolve(local, policy)` provides the recoverable selection operation; `lookup` and `resolve` are direct counterparts. The default rejects ambiguity and gaps; options select the earlier/later instant for a fold or the next valid reading for a gap. “Next valid” means the transition boundary, not preserving minutes by shifting a whole gap. A separate shift policy can be considered later.
 
 ## Semantic rules
 
 ### Validated calendar values
 
-Constructors validate components and return `expected`. Fields are private; successful values are always valid. Calendar math is proleptic Gregorian, independent of locale and zone. Years 1–9999 are the recommended initial public range; BCE/year zero are deferred.
+Component factories have recoverable `try_create` and direct `create` forms. Infallible composition of already validated values returns a value directly. Fields are private; successful values are always valid. Calendar math is proleptic Gregorian, independent of locale and zone. Years 1–9999 are the recommended initial public range; BCE/year zero are deferred.
 
 Hours are 0–23, minutes and seconds 0–59, nanoseconds 0–999,999,999. Neither `24:00` nor second 60 is accepted. Component accessors expose numbers; composition of an already validated date and time preserves validity.
 
@@ -125,19 +124,19 @@ Month/year addition rejects an invalid target day unless `month_roll::clamp` is 
 
 `timestamp` stores signed `int64_t` Unix seconds and normalized unsigned nanoseconds. For example, half a second before the epoch is `(-1, 500000000)`. Construction and arithmetic normalize with checked integer operations. Civil conversion can fail when outside years 1–9999 even though the timestamp itself is representable.
 
-This avoids limiting calendar representation to the roughly 1677–2262 range of signed 64-bit nanoseconds. Existing `system_time_point` retains its representation and ABI. Converting it to a timestamp is exact; the reverse conversion is checked. `timestamp::now()` initially wraps the existing system-clock ABI, so its actual clock acquisition range remains that ABI's range. A wider clock ABI is a separate, explicit follow-up if required.
+This avoids limiting calendar representation to the roughly 1677–2262 range of signed 64-bit nanoseconds. Existing `system_time_point` retains its representation and ABI. Converting it to a timestamp is exact; the reverse conversion is checked. `timestamp::try_now()` initially wraps the existing system-clock ABI, so its actual clock acquisition range remains that ABI's range. A wider clock ABI is a separate, explicit follow-up if required.
 
 `try_add`/`try_sub` accept fixed durations without first converting the entire value to nanoseconds. `try_elapsed_since` reports overflow if its requested result cannot represent the difference. The initial default difference result can remain nanoseconds; a destination-unit member template permits a wider elapsed range. No wraparound or saturation is implicit.
 
 ### Zone ownership, data and discovery
 
-Recommend an installed, pinned IANA bundle as the default data source. `tzdb::load_default()` loads the toolchain's installed resource; `tzdb::load(path)` supports application-controlled updates and reproducible distribution. Both return immutable snapshots, including the IANA release identifier and resource-format version. Missing resources are errors, not silent UTC fallback.
+Use a pinned IANA bundle embedded by `embed_bytes` when compiling an application. The installed stdlib must carry that resource at compile time; a deployed executable has no default runtime resource-path dependency. The initial snapshot is IANA 2026f. `tzdb::try_load_default()`/`load_default()` create immutable snapshots from those bytes; `try_load(path)`/`load(path)` support application-controlled updates. The snapshot records the IANA release identifier and resource-format version. Loading failures are explicit, not silent UTC fallback.
 
 Use a single indexed resource containing TZif bytes and a manifest, rather than treating a lazily read mutable system directory as a snapshot. A loaded database owns immutable bytes. `locate(id)` validates/parses a zone and returns an owning immutable rules handle; repeated lookups may parse again, so clients should retain handles. Hidden mutable caches are not required initially. Explicit clones share ownership. Loading a replacement does not change existing handles or previously computed values.
 
 Zone metadata views borrow from their owning handle. A `zoned_time` retains that handle, so dropping the database is safe. Thread transfer/sharing is permitted only when the concrete source-defined payload satisfies existing capability rules, not by an unchecked assertion that immutable data is safe.
 
-UTC and fixed-offset zones require no database. Offsets have second precision; abbreviations are display labels, not identifiers. Local-zone discovery is a separate fallible `current_zone_id()` service, followed by lookup in an explicit database. Initial implementation targets supported macOS/Linux environments; Windows identifier mapping requires its own verified adapter. Never infer an IANA identity from an abbreviation alone.
+UTC and fixed-offset zones require no database. Offsets have second precision; abbreviations are display labels, not identifiers. Local-zone discovery has paired `try_current_zone_id()`/`current_zone_id()` forms, followed by lookup in an explicit database. Initial implementation targets supported macOS/Linux environments; Windows identifier mapping requires its own verified adapter. Never infer an IANA identity from an abbreviation alone.
 
 The parser implements a documented POSIX-time TZif v2/v3/v4 profile, including future-rule footers. It rejects leap-aware data and unsupported encodings instead of interpreting them as ordinary Unix seconds. Undefined or unsupported coverage returns an error; it must not silently freeze the last observed offset. Follow RFC 9636's boundary rules, checked field sizes and signed offset semantics. Fixed-offset constructors and intermediate arithmetic must also avoid assuming offsets are whole minutes or within a one-hour DST change.
 
@@ -155,7 +154,7 @@ Proposed custom-pattern API:
 - `format<T>(T& value, time_pattern<T> pattern) -> string`, using the existing cleanup-preserving panic convention on failure.
 - `try_runtime_format<T>(T& value, string_view pattern)` for configuration/user patterns.
 - `try_format_to` for appending to a caller-owned string, with unchanged output on failure.
-- A prepared owning runtime-pattern object for repeated formatting without repeated parsing.
+- A prepared owning runtime-pattern object for repeated formatting without repeated parsing. Free `try_prepare_time_pattern<T>`/`prepare_time_pattern<T>` factories construct it; mutable `try_assign`/`assign` replace its pattern transactionally. This avoids relying on unsupported generic static factories.
 
 Infer `T` from the value, not the pattern. Checked literals use existing implicit consteval construction. Runtime patterns receive equivalent validation with byte-offset errors. Prepared runtime patterns own their text; literal storage must follow existing static-borrow rules.
 
@@ -171,13 +170,13 @@ Before implementation acceptance, compile small probes of checked generic patter
 
 The frontend owns ordinary constraint/consteval diagnostics and source locations; HIR/MIR retain normal ownership and call semantics; LLVM lowers ordinary source operations. No new syntax, parser tokens or editor grammar are required. LSP hovers/completion should expose source declarations and errors normally. Literal diagnostics should point to the invalid pattern directive when existing immediate-argument location machinery permits it; runtime errors carry byte positions. LLVM is the primary implementation target, with no new C++ parity gate.
 
-Resource installation belongs to packaging/driver infrastructure, with an explicit discoverable default resource path and application override. Installed binaries must be tested outside the compiler checkout.
+Resource installation belongs to packaging/driver infrastructure: the bundle must be installed adjacent to its source module for compile-time embedding. Explicit file loading remains an application override. Standalone deployed binaries must be tested without access to the compiler checkout or toolchain data path.
 
 ## Compatibility and migration
 
 This is additive to current chrono and depends on settling RFC 0008/PR #647. Existing nanosecond clocks and casts retain their meanings. `days` adds a fixed unit; `calendar_days`, `months` and `years` cannot silently enter fixed-duration APIs.
 
-No exception-based API is introduced. Error enums distinguish invalid components, overflow, unknown zone, unavailable data, malformed/unsupported data, unsupported coverage, ambiguous/nonexistent local times, and invalid patterns. An umbrella error preserves those causes for applications that combine operations.
+No exception-based API is introduced. Error enums distinguish invalid components, overflow, unknown zone, unavailable data, malformed/unsupported data, unsupported coverage, ambiguous/nonexistent local times, and invalid patterns. New calendar, timestamp and zone operations share `chrono::errc`; formatting adds byte-position information through `format_error`. Existing clock/duration error families remain unchanged.
 
 Library release, IANA data release and resource-format version are separate. Applications may pin a bundle or choose a newer compatible bundle. Include required data notices and provenance. A release must document which resources distributors must ship.
 
@@ -185,7 +184,7 @@ Library release, IANA data release and resource-format version are separate. App
 
 Private validated representations prevent invalid dates from escaping constructors. All arithmetic and parser size/count operations check overflow. No borrowed view outlives its database/zone/pattern owner. Failed parsing publishes no partial object; failed formatting leaves the destination unchanged through preflight/reservation or rollback.
 
-Treat TZif and bundles as untrusted input. Enforce file-size, count, nesting/record and output limits before allocation; validate offsets and indexes before slicing; reject inconsistent headers and truncated content. Concrete default limits require comparison against the complete pinned database before acceptance. Fuzz parser and mapping code, not only normal zones.
+Treat TZif and bundles as untrusted input. Enforce file-size, count, nesting/record and output limits before allocation; validate offsets and indexes before slicing; reject inconsistent headers and truncated content. Initial limits are 64 MiB per bundle, 4096 entries, 4 MiB per zone, 200,000 transitions, 256 local types and 65,536 designation bytes. Validate these against the complete pinned database. Patterns are limited to 64 KiB and rendered output to 1 MiB. Fuzz parser and mapping code, not only normal zones.
 
 No silent guessing at DST boundaries, data gaps, leap-second semantics or missing resources. Historical/future civil accuracy depends on the supplied data, not just arithmetic correctness. IANA documents historical coverage limits and changes in political rules; expose the data version to make that limitation inspectable.
 
@@ -209,19 +208,19 @@ Measure cold loading, repeated retained-zone lookup, local resolution near trans
 
 ## Unresolved questions
 
-Before acceptance:
+Implementation decisions and remaining validation:
 
-1. Confirm pinned default bundle versus OS-data default, resource ownership, installation lookup and independent update workflow.
-2. Confirm public civil years 1–9999 and the new split `timestamp` name versus generalizing the existing time-point family.
+1. Default bundle: pinned IANA 2026f, embedded at compile time. Verify installation and standalone deployment; explicit bundle loading supports independent updates.
+2. Use public civil years 1–9999 and a separate split `timestamp`; validate exact bridge boundaries and preserve existing clock contracts.
 3. Validate the two-candidate mapping profile against real and adversarial data; choose an extensible candidate collection if rejecting larger folds is undesirable.
 4. Compile the specific ownership, constexpr and checked-pattern combinations and record any prerequisite compiler issues.
-5. Finalize resource limits, pattern naming (`%{zone}` in particular), and destination-unit elapsed-difference spelling.
+5. Validate the documented resource limits and `%{zone}` spelling. Destination-unit difference is `try_elapsed_since_as<To>`/`elapsed_since_as<To>`.
 
 Deliberately deferred: leap-second timescales, localization/CLDR, BCE calendars, recurrence engines, general date-string parsing, and additional platform zone-discovery adapters. These are not silently required for the initial accepted scope.
 
 ## Implementation plan
 
-No slice below is implemented by this RFC.
+Implementation is in progress. The slices below remain acceptance obligations until supported by landed code and validation; this RFC alone implements none of them.
 
 1. Settle duration RFC 0008 and PR #647. Add fixed `days`, separate calendar counts, validated date/time types, constexpr Gregorian arithmetic and focused probes.
 2. Add split timestamps, checked clock bridges and elapsed operations; retain native ABI compatibility.
@@ -246,7 +245,10 @@ Document validation only checks this proposal's structure; it does not establish
 
 ## Decision record
 
-No design acceptance yet. The owner requested an audit and plan on 2026-11-20. Recommendations and open questions above remain draft decisions. No implementation or release was authorized by this planning request.
+- 2026-11-20: Luke Howe requested the initial audit and plan. The original proposal was a draft and did not authorize implementation.
+- 2026-11-20: Luke Howe subsequently requested: “implement rfc 0009 with a subagent to spread parallel workloads. have try and none try versions of each api however if the api can be made to not need expected than that is prefered in which case no try version is needed.” This authorizes implementation with paired recoverable/direct operations and infallible APIs where their invariants permit them. Direct fallible forms use the existing cleanup-preserving panic convention. Existing clock `now` and `elapsed_since` retain their expected-returning compatibility contracts.
+- The implementation selects a compile-time embedded IANA 2026f bundle, explicit replacement-bundle loading, a separate split timestamp, and free prepared-pattern factories using current language facilities. These are recorded implementation choices, not claims of completed validation or release.
+- The document remains `draft` until the owner/delegated maintainer decision is recorded through the repository's durable decision-link process. The explicit implementation request above is recorded here rather than presented as a fabricated GitHub approval. Implementation and release completion remain unproven.
 
 ## References
 
