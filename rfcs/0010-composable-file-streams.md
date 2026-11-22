@@ -39,13 +39,20 @@ expected<void, std::io_errc> log_value(std::string_view path, int value) {
 }
 ```
 
-The convenience spelling is `mut std::ifstream in{path};`. Opening occurs during construction. The object remains inspectable on failure. The factory performs one open and returns the same failure code through `expected`. A default-constructed file stream can represent a closed file. Document the operations on that state and the distinction between being open and the last operation succeeding.
+The convenience spelling is `mut std::ifstream in{path};`. Opening occurs during construction. The object remains inspectable on failure. The factory performs one open and returns the same failure code through `expected`. To open a file on an existing stream, call its mutable `try_open` method:
+
+```gti
+mut std::ifstream in{};
+?in.try_open(path);
+```
+
+A failed `try_open` sets the stream’s failure state and returns its error. Opening a stream that already owns a file reports failure and preserves the original handle. A successful open clears the stream state, including failure from a previous attempt. `is_open()` reports whether the stream owns a file handle.
 
 ## Semantic rules
 
 Input, output, and combined streams share reusable state and operations. The public surface should use the familiar spellings for formatted insertion and extraction, unformatted get/peek/read/ignore/putback/unget and output put/write/flush, last unformatted input count, positioning, and state observation and reset. Distinguish EOF, format failure and transport failure. Specify partial progress, delimiters, token boundaries, and numeric overflow; check every overload using a real caller. Map file and memory operations onto this common implementation.
 
-File streams expose default and path construction, a typed static open, is_open, error, close and access to the associated buffer, with familiar modes and supported positioning. A bidirectional file buffer maintains one logical cursor. Reconcile unread input on transition to writing, flush pending output before entering reading, and synchronize position for seeking. A close or flush that callers need to observe is explicit. Destruction releases the resource once.
+File streams expose default and path construction, a static `open` factory, a mutable `try_open` returning `expected<void, io_errc>`, `is_open`, `error`, `close` and access to the associated buffer, with familiar modes and supported positioning. A bidirectional file buffer maintains one logical cursor. Reconcile unread input on transition to writing, flush pending output before entering reading, and synchronize position for seeking. A close or flush that callers need to observe is explicit. Destruction releases the resource once.
 
 A shift overload may use a mutable receiver and return a mutable reference of its receiver type. This shape must respect the method receiver's borrowing contract. A chain must neither copy the owner nor extend its lifetime, and may not confer mutable access to an immutable value. The RHS of extraction can be a second mutable reference, subject to normal overlap rules. Existing owned-result and built-in shifts keep their semantics.
 
@@ -71,26 +78,22 @@ A static factory alone makes failures explicit but loses familiar construction. 
 
 ## Unresolved questions
 
-Should a static factory and an instance method be allowed to share a name? For a file stream, `ifstream::open(path)` would return a newly opened stream in an `expected`, while `file.open(path)` would open the file on an existing stream. GTI currently issues `GTI-S2039` when the second member is declared, even when the parameter lists differ. [Compiler declaration check](https://github.com/lang-gti-official/gti/blob/064067873beda2ad1e7179db1219357b75c8fd80/src/compiler/semantic_flow_analysis.cpp#L5763-L5776)
-
-One option is to make type qualification select static candidates and object qualification select instance candidates when both exist. Under that rule, test a user-defined class with identical parameter lists and different result types. The call spelling alone must select the operation, including when the caller discards the result. A call through a read-only object must still reject a mutating instance method. The library-only alternatives are to spell the instance operation `reopen` or to offer only path construction and the static factory. This choice is awaiting an owner decision.
-
 Validate the concrete mapping of each C++ member to GTI ownership and error handling, especially replacement of buffers, runtime-polymorphic streams, swaps and close failure. Any fundamental language prerequisite beyond checked mutable shifts goes back to the owner before work continues. Track gaps explicitly during API review.
 
 ## Implementation plan
 
 1. Establish and execute the checked mutable-shift contract on user-defined types, including rejection tests.
 2. Implement shared stream state and input/output methods against reusable buffer contracts. Exercise both memory and file transports.
-3. Implement file ownership, open modes, cursor reconciliation, and the three file facades. Combine with the common layer and exercise the same API through both opening forms.
+3. Implement file ownership, open modes, cursor reconciliation, and the three file facades. Combine with the common layer and exercise path construction, static factory opening, and opening an existing stream.
 4. Validate interoperability, document the method map and failure semantics, measure representative operations and integrate through the compiler repository.
 
 ## Validation and release criteria
 
-Exercise chained I/O, mixed-type formatting, extraction failure, clean EOF, partial transfers, buffering and open/close failures. Use existing and missing temp paths, test truncation and appending, and check the resulting bytes after switching direction and seeking. Check move/destruction, constructor/factory equivalence, preserved existing shifts, and borrow-checker rejections. Run source tests on LLVM with an optimized compiler, affected editor/semantic consumers, native smoke and normal CI. RFC document checks establish only the document's consistency.
+Exercise chained I/O, mixed-type formatting, extraction failure, clean EOF, partial transfers, buffering and open/close failures. Use existing and missing temp paths, test truncation and appending, and check the resulting bytes after switching direction and seeking. Check move/destruction, equivalence of opening through the constructor, factory and existing stream, preserved existing shifts, and borrow-checker rejections. Run source tests on LLVM with an optimized compiler, affected editor/semantic consumers, native smoke and normal CI. RFC document checks establish only the document's consistency.
 
 ## Decision record
 
-The owner requested both opening forms, observable errors and familiar stream methods, and on 2026-11-22 explicitly authorized checked mutable shift overloads in the implementation chat. The proposal is a draft pending a durable RFC decision.
+The owner requested both opening forms, observable errors and familiar stream methods, and on 2026-11-22 explicitly authorized checked mutable shift overloads in the implementation chat. On the same day the owner selected static `open` for the factory and instance `try_open` for an existing stream. Both spellings work with ordinary GTI member lookup. The overall proposal remains a draft.
 
 ## References
 
