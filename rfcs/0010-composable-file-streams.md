@@ -9,7 +9,7 @@
 | Area | stdlib |
 | Proposal | https://github.com/lang-gti-official/rfcs/pull/11 |
 | Decision | pending |
-| Implementation | none |
+| Implementation | https://github.com/lang-gti-official/gti/pull/667 |
 | Supersedes | none |
 | Superseded by | none |
 
@@ -70,6 +70,10 @@ Shifts should cost an ordinary method call and introduce no allocation or stream
 A static factory alone makes failures explicit but loses familiar construction. A constructor alone requires manual failure propagation. Offering both adds little when they share the same opening primitive. Independent file reader and writer cursors are inadequate when read-ahead and buffered output operate on the same descriptor. Requiring a C++ virtual-inheritance graph would impose an object model on clients that already compose through GTI reader/writer contracts.
 
 ## Unresolved questions
+
+Should a static factory and an instance method be allowed to share a name? For a file stream, `ifstream::open(path)` would return a newly opened stream in an `expected`, while `file.open(path)` would open the file on an existing stream. GTI currently issues `GTI-S2039` when the second member is declared, even when the parameter lists differ. [Compiler declaration check](https://github.com/lang-gti-official/gti/blob/064067873beda2ad1e7179db1219357b75c8fd80/src/compiler/semantic_flow_analysis.cpp#L5763-L5776)
+
+One option is to make type qualification select static candidates and object qualification select instance candidates when both exist. Under that rule, test a user-defined class with identical parameter lists and different result types. The call spelling alone must select the operation, including when the caller discards the result. A call through a read-only object must still reject a mutating instance method. The library-only alternatives are to spell the instance operation `reopen` or to offer only path construction and the static factory. This choice is awaiting an owner decision.
 
 Validate the concrete mapping of each C++ member to GTI ownership and error handling, especially replacement of buffers, runtime-polymorphic streams, swaps and close failure. Any fundamental language prerequisite beyond checked mutable shifts goes back to the owner before work continues. Track gaps explicitly during API review.
 
