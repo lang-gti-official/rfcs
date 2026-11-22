@@ -48,7 +48,7 @@ mut std::ifstream in{};
 
 A failed `try_open` sets the stream’s failure state and returns its error. Opening a stream that already owns a file reports failure and preserves the original handle. A successful open clears the stream state, including failure from a previous attempt. `is_open()` reports whether the stream owns a file handle.
 
-Use `as_istream()` or `as_ostream()` to borrow a stream for a function that accepts a particular direction. For example, a log writer taking `mut std::ostream&` can write through the output view of a bidirectional file. The caller can then inspect the file’s error state or seek from the position the writer reached. A test can pass the output view of a memory stream to the same writer.
+Use `as_istream()` or `as_ostream()` to borrow a stream in one direction. A writer declared as `void write_log(mut std::ostream out)` accepts `write_log(file.as_ostream())` directly. A writer taking `mut std::ostream&` accepts a named view, as in `mut auto out = file.as_ostream();` followed by `write_log(out);`. Both forms write to the original file. Once the borrow ends, the caller can inspect the file’s error state or seek from the position the writer reached. A memory stream can supply a view to the same writer.
 
 ## Semantic rules
 
