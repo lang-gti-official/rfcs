@@ -72,7 +72,7 @@ A returned shift reference is bounded by the original receiver. Reject escapes, 
 
 ## Performance and resource costs
 
-Shifts should cost an ordinary method call and introduce no allocation or stream copy. Buffering should amortize host calls across small reads/writes. Exercise large-file sequential reads, alternating reads and writes, and repeated formatted insertion; inspect optimized output for object copying or allocations per operation. There are no benchmark results yet.
+Shifts should cost an ordinary method call and avoid copying the stream. Buffering should amortize host calls across small reads and writes. In the implementation PR’s local arm64 macOS benchmark, using caller-provided spans for large transfers reduced the median time for an 8 MiB write from 22.28 ms to 6.44 ms and an 8 MiB read from 4.85 ms to 4.05 ms. Each median covers five optimized runs with 16 KiB chunks and byte-for-byte verification. The integer-output program made nine GTI runtime allocations with either one record or 10,000 records. These measurements cover the tested file operations on one host.
 
 ## Alternatives and tradeoffs
 
