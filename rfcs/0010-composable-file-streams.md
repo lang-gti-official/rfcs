@@ -48,6 +48,8 @@ mut std::ifstream in{};
 
 A failed `try_open` sets the stream’s failure state and returns its error. Opening a stream that already owns a file reports failure and preserves the original handle. A successful open clears the stream state, including failure from a previous attempt. `is_open()` reports whether the stream owns a file handle.
 
+Use `as_istream()` or `as_ostream()` to borrow a stream for a function that accepts a particular direction. For example, a log writer taking `mut std::ostream&` can write through the output view of a bidirectional file. The caller can then inspect the file’s error state or seek from the position the writer reached. A test can pass the output view of a memory stream to the same writer.
+
 ## Semantic rules
 
 Input, output, and combined streams share reusable state and operations. The public surface should use the familiar spellings for formatted insertion and extraction, unformatted get/peek/read/ignore/putback/unget and output put/write/flush, last unformatted input count, positioning, and state observation and reset. Distinguish EOF, format failure and transport failure. Specify partial progress, delimiters, token boundaries, and numeric overflow; check every overload using a real caller. Map file and memory operations onto this common implementation.
@@ -78,7 +80,7 @@ A static factory alone makes failures explicit but loses familiar construction. 
 
 ## Unresolved questions
 
-Validate the concrete mapping of each C++ member to GTI ownership and error handling, especially replacement of buffers, runtime-polymorphic streams, swaps and close failure. Any fundamental language prerequisite beyond checked mutable shifts goes back to the owner before work continues. Track gaps explicitly during API review.
+Validate the concrete mapping of each C++ member to GTI ownership and error handling, especially replacement of buffers, swaps and close failure. Validate passing a borrowed view to a function, including the lifetime of the borrow and the exclusion of overlapping mutable views. Any fundamental language prerequisite beyond checked mutable shifts goes back to the owner before work continues.
 
 ## Implementation plan
 
@@ -93,7 +95,7 @@ Exercise chained I/O, mixed-type formatting, extraction failure, clean EOF, part
 
 ## Decision record
 
-The owner requested both opening forms, observable errors and familiar stream methods, and on 2026-11-22 explicitly authorized checked mutable shift overloads in the implementation chat. On the same day the owner selected static `open` for the factory and instance `try_open` for an existing stream. Both spellings work with ordinary GTI member lookup. The overall proposal remains a draft.
+The owner requested both opening forms, observable errors and familiar stream methods, and on 2026-11-22 explicitly authorized checked mutable shift overloads in the implementation chat. On the same day the owner selected static `open` for the factory, instance `try_open` for an existing stream, and explicit borrowed input and output views using GTI’s existing language rules. The overall proposal remains a draft.
 
 ## References
 
