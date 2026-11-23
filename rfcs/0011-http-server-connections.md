@@ -7,7 +7,7 @@
 | Created | 2026-11-23 |
 | Updated | 2026-11-23 |
 | Area | stdlib |
-| Proposal | pending |
+| Proposal | https://github.com/lang-gti-official/rfcs/pull/12 |
 | Decision | pending |
 | Implementation | none |
 | Supersedes | none |
