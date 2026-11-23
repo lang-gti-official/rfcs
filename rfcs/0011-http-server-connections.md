@@ -15,7 +15,7 @@
 
 ## Summary
 
-Add a synchronous HTTP/1.1 protocol API to `std.http` for one already-connected duplex byte stream. A GTI package can accept a TCP stream, wrap it, read a request head, stream or decline the body, and send an ordered response. The package decides when to do each operation. No standard HTTP listener, accept loop, handler type, router, or executor is required.
+Add a public incremental HTTP/1.1 codec to `std.http` for the server side of one connection. Nonblocking reads and writes driven by a third-party event loop are required in the first version. A blocking connection adapter drives the same codec for packages that prefer worker threads. A GTI package can accept a TCP stream, wrap it, read a request head, stream or decline the body, and send an ordered response. The package decides when to do each operation. No standard HTTP listener, accept loop, handler type, router, or executor is required.
 
 ## Motivation and goals
 
@@ -32,11 +32,13 @@ Today `std::tcp::listener.accept()` returns an owned stream. The current HTTP re
 
 ## Non-goals
 
-The first version is an HTTP/1.1 origin-server building block. The server package supplies deployment policy, Date generation where required, TLS configuration, authentication, content negotiation and JSON. HTTP/1.0 compatibility, HTTP/2 and HTTP/3, tunnel or upgrade handoff, concurrent in-flight exchanges, nonblocking resumption, and indefinite streaming responses need separate contracts. A fixed-size dashboard response and streamed request ingestion are in scope.
+The first version is an HTTP/1.1 origin-server building block. The server package supplies deployment policy, Date generation where required, TLS configuration, authentication, content negotiation and JSON. HTTP/1.0 compatibility, HTTP/2 and HTTP/3, tunnel or upgrade handoff, concurrent in-flight exchanges on one connection and indefinite streaming responses need separate contracts. A fixed-size dashboard response and streamed request ingestion are in scope.
 
 ## Guide-level design
 
-Proposed GTI, inside a package function that returns an appropriate `expected`. Here `socket` is a stream from the package's accept loop. `route` is package code. It can read the request body through the connection and returns a reply holding a response head and owned bytes.
+A server package owns a nonblocking socket, a receive buffer and one move-only `std::http::server_codec` per connection. When a dashboard client sends half a header, the package feeds those bytes to the codec, records the consumed prefix, then serves other ready connections. When the remainder arrives it continues with the same codec. A slow reader can likewise pause halfway through a reply. Its pending bytes and write offset belong to that connection alone.
+
+The blocking convenience API uses the same exchange rules. Proposed GTI, inside a package function that returns an appropriate `expected`. Here `socket` is a stream from the package's accept loop. `route` is package code. It can read the request body through the connection and returns a reply holding a response head and owned bytes.
 
 ```gti
 mut auto conn = ?std::http::server_connection<std::tcp::stream>::open(
@@ -54,7 +56,44 @@ while (true) {
 
 A GET handler can inspect `request.method_text()` and `request.raw_target()` and reply immediately. A POST handler can check the media type and declared length, call `send_continue()` if needed, and loop over `read_body(scratch)` until it returns zero. The package enforces its smaller JSON limit even for chunks with no declared total. It can send a final rejection immediately. Production dispatch inspects errors from `read_head` or `read_body` to decide whether a close-only error response is possible. Using `?` as above instead elects to close on error.
 
-### Proposed public surface
+### Driving the codec from an event loop
+
+The table uses proposed signatures. Fallible operations return `expected<T, server_error>`. One codec represents one ordered HTTP/1.1 conversation and never reads, writes, waits, schedules callbacks or owns a socket.
+
+| Operation | Result and progress contract |
+| --- | --- |
+| `server_codec::open(limits)` | Validate limits and return an empty codec. |
+| `parse_head(input)` | Return the count of input octets consumed plus `need_input` or `head(request_head)`. Consume through at most the head terminator. The head owns its metadata. |
+| `parse_body(input, dst)` | Return input consumed, decoded bytes written to nonempty caller storage, and one of `need_input`, `need_space` or `body_end`. Deliver written bytes even when the same step reports a boundary. Framing bytes can be consumed without producing data. The codec never retains either span. |
+| `end_input()` | Signal actual EOF after presenting all available bytes. Report clean end between requests, truncation for an unfinished head/body, or remember a peer half-close for a completed request and allow its final output. |
+| `begin_response(head, representation_length, policy)`, `begin_continue()`, `begin_error(status)` | Preflight the operation, snapshot encoded fields in bounded codec-owned storage, then enter output state. The caller retains the response body. Exactly one output operation may be pending. |
+| `next_output()` | Report `framing(bytes)`, `body(remaining)`, or `flush`. Framing is a read-only receiver-tied span. For body output the driver supplies its own next payload bytes, capped at the remaining wire length. An interim or close-only error reply never requests body data. |
+| `advance_output(n)` | Acknowledge exactly the positive prefix accepted by the transport for the current framing or body segment. Reject an out-of-range count without changing state. Drop the framing borrow before this mutable call. Pending output is stable until acknowledged. |
+| `finish_flush()` | Called only after a successful transport flush (immediate on an unbuffered socket). Return `continue_sent`, `reusable` or `close` and transition once. On cancellation or fatal transport failure the driver abandons this codec and closes the stream. |
+
+The driver owns the unconsumed input suffix, including a pipelined next request. Discard exactly the reported prefix on success. On peer protocol failure abandon all remaining input. A `need_input` result consumes the full offered window; `need_space` requests fresh body storage. Empty input can still produce a known `body_end`. An empty span by itself never signals EOF. When the peer half-closes, first process buffered bytes up to the allowed exchange boundary; defer EOF notification while a pipelined suffix is waiting for its turn.
+
+A package's writable callback could look like this (pseudocode):
+
+```text
+while within this connection's byte budget:
+    step = codec.next_output()
+    if step is flush:
+        try to flush; on would_block, wait for writable and return
+        on success, dispatch codec.finish_flush() and return
+    bytes = step.bytes if framing else reply.unsent_prefix(step.remaining)
+    result = socket.try_write(bytes)
+    release temporary views
+    if result is would_block: wait for writable and return
+    if result is fatal or zero progress: close and return
+    if step was body: advance the reply's cursor by result.count
+    codec.advance_output(result.count)
+reschedule this connection
+```
+
+In this sketch every fatal failure, including a flush failure, abandons the exchange. A real package may use readiness notifications or I/O completions. Readiness permits an attempt; a subsequent `would_block` changes no offsets. For completion-based writes keep the submitted bytes alive and immutable until completion and acknowledge the actual count once. An asynchronous cancellation must retire outstanding buffers before destroying their owners. Suspend socket reads when the consumer runs out of body space. Subscribe to write readiness only while blocked on output; process locally buffered input before waiting for another socket event. Fairness budgets, timers and registration with the platform poller belong to the package. A standard multi-socket poller could be proposed separately; the codec also works with a package-provided reactor.
+
+### Blocking adapter and shared message types
 
 Signatures below describe the API contract. Accessors that return a span or text view borrow the named receiver. Mutable methods operate on a single exclusively accessed connection.
 
@@ -75,19 +114,19 @@ Signatures below describe the API contract. Accessors that return a span or text
 
 **One exchange at a time.** Opening enters the between-requests state. Reading a head transitions to an active exchange. Repeated body reads consume its framing. A successful final send returns to between-requests only if reuse is safe. Otherwise the connection enters a terminal state. A second head before replying, a second final response, and operations after terminal state return a local state error without performing I/O. On a close disposition the encoder signals closure on the wire and refuses further exchanges. The package promptly drops the owner to close the underlying stream. An unread positive-length or unfinished chunked body forces close on an early final response. Drop releases the transport and buffers once, with no implicit drain, response, or blocking flush.
 
-**Limits and framing.** Proposed initial defaults are 8 KiB for the request line, 32 KiB for the whole head including terminators, 100 fields, 1 MiB of decoded request data, 1 KiB per chunk-size/extension line, 8 KiB and 32 fields for trailers, and 64 KiB of aggregate chunk framing and trailers per message. Cap the response head at 32 KiB and 100 fields, checked again before emission. Validate overflow and incompatible limits before opening. These are configurable proposed defaults. Read-ahead has a fixed-size window independent of the declared body length. Enforce each budget progressively, including split delimiters, and reject an over-limit declared length at head time. Output body size is supplied by the package; sending a span requires no body-sized internal allocation.
+**Limits and framing.** Proposed initial defaults are 8 KiB for the request line, 32 KiB for the whole head including terminators, 100 fields, 1 MiB of decoded request data, 1 KiB per chunk-size/extension line, 8 KiB and 32 fields for trailers, and 64 KiB of aggregate chunk framing and trailers per message. Cap the response head at 32 KiB and 100 fields, checked again before emission. Validate overflow and incompatible limits before opening. These are configurable proposed defaults. The blocking adapter bounds its read-ahead window independently of declared body length; event-loop packages set their own transport-buffer high-water marks. Enforce each budget progressively, including split delimiters, and reject an over-limit declared length at head time. Output body size is supplied by the package; sending a span requires no body-sized internal allocation.
 
 **Incoming wire profile.** Parse octets, strict CRLF, method token and HTTP version. Require a single valid Host field on HTTP/1.1, reject whitespace before field colons, obsolete folding, prohibited control bytes and invalid framing numbers. Preserve opaque field-value octets and strip only surrounding optional whitespace. Accept origin-form and absolute-form, use the absolute target authority for effective authority in that form, and preserve the raw Host occurrence for inspection. Recognize OPTIONS asterisk-form and CONNECT authority-form under their method rules. Expose the authority selected by the target-form rules through a receiver-tied `effective_authority()` accessor so a router can apply its own allowed-host policy consistently. The package can reject CONNECT with a final failure. Do not percent-decode, normalize paths or silently treat extension methods as GET. Recognizable unsupported versions can be rejected with 505.
 
 Accept fixed length, a single final chunked transfer coding, or an absent body when neither framing header is present. Reject combined Transfer-Encoding and Content-Length, any repeated or list-valued Content-Length (deliberately strict), signs, overflow, invalid chunk syntax and framing ambiguities. Unsupported coding chains cannot enter a reusable exchange. Count chunk extensions, delimiters and trailers against framing budgets. Validate trailer field syntax and forbidden fields, consume trailers separately, and discard permitted trailers in this profile. No application depends on dropped trailers for routing, authorization, or integrity. Preserve read-ahead after the final trailer terminator for the next head. Partial EOF in a head, body or chunk terminator is a distinct truncation error.
 
-**Expectations and output.** For `100-continue` on a framed, potentially nonempty body, expose the decision at head time. An attempted body read before the decision is a local state error. Reject unsupported expectations and permit a 417 response. A zero-length body needs no handshake. Response construction accepts final statuses 200–599. The encoder owns Content-Length, Transfer-Encoding, Connection, Trailer and Upgrade, rejects caller attempts to supply them, and emits a computed length for ordinary replies. On HEAD, the provided body represents the corresponding GET content for length calculation and zero body bytes are written. For 204 and 304 require an empty span and omit Content-Length. For 205 require an empty span and send length zero. Refuse successful CONNECT responses in this profile. Error replies also respect HEAD. Response headers must reject CR/LF, invalid tokens and forbidden controls before any write. A peer's `Connection: close` token, explicit close policy or unfinished input body precludes reuse. Never advertise a protocol switch.
+**Expectations and output.** For `100-continue` on a framed, potentially nonempty body, expose the decision at head time. An attempted body read before the decision is a local state error. Reject unsupported expectations and permit a 417 response. A zero-length body needs no handshake. Response construction accepts final statuses 200–599. The encoder owns Content-Length, Transfer-Encoding, Connection, Trailer and Upgrade, rejects caller attempts to supply them, and emits a computed length for ordinary replies. On HEAD, the representation length supplies the corresponding GET length and the codec requests zero wire-body bytes. The blocking adapter derives that length from its supplied span. For 204 and 304 require an empty span and omit Content-Length. For 205 require an empty span and send length zero. Refuse successful CONNECT responses in this profile. Error replies also respect HEAD. Response headers must reject CR/LF, invalid tokens and forbidden controls before any write. A peer's `Connection: close` token, explicit close policy or unfinished input body precludes reuse. Never advertise a protocol switch.
 
-**Failure boundaries.** Distinguish configuration/argument errors, wrong state, malformed peer input, unsupported protocol features, each limit class, truncation and transport failure. Invalid local responses can be corrected before committing any bytes. On a peer syntax/limit error before final-response output the decoder stops consuming input; only a single best-effort error reply or drop remains. A failed continue, write, flush, or transport read is terminal. Short successful writes advance only by their accepted prefix; zero progress on nonempty output is a failure. No public retry or replay after partial output. Transports use their existing error mapping. Frameworks requiring a total deadline must supply a deadline-enforcing stream adapter or external cancellation facility. A per-syscall socket timeout cannot by itself bound time across repeated successful short reads.
+**Failure boundaries.** Distinguish configuration/argument errors, wrong state, malformed peer input, unsupported protocol features, each limit class, truncation and transport failure. Invalid local responses can be corrected before committing any bytes. On a peer syntax/limit error before final-response output the decoder stops consuming input; only a single best-effort error reply or drop remains. Temporary unavailability leaves the same operation pending, including a partially written 100 response or an outstanding flush. Fatal transport errors are terminal. A blocking adapter requires a blocking stream and propagates unexpected transport failures; event-loop drivers use the codec directly. Short successful writes advance only by their accepted prefix; zero progress on nonempty output is a failure. Resume only the outstanding suffix; starting the response again would duplicate bytes. Transports use their existing error mapping. Frameworks requiring a total deadline must supply a deadline-enforcing stream adapter or external cancellation facility. A per-syscall socket timeout cannot by itself bound time across repeated successful short reads.
 
 ## Compiler and tooling design
 
-Implement the protocol in ordinary GTI against the existing structural reader/writer contracts on one duplex owner. Use a non-generic parser/encoder for byte accounting and wire rules where feasible, with a small generic I/O driver. This permits deterministic tests with user-defined streams and leaves room for a TLS wrapper exposing the same operations. No new compiler syntax, nominal borrow exemption, runtime HTTP listener, handler trampoline, or libcurl server dependency is proposed. Publish public declarations, documentation and examples through the normal stdlib/tooling pipeline.
+Implement the non-generic parser/encoder in ordinary GTI over spans and owned state. A small blocking driver implements read_head, read_body, send_continue, send and send_error by driving its public steps against the existing structural reader/writer contracts on one duplex owner. Both drivers use identical validation, byte counts and exchange transitions. This permits deterministic tests with user-defined streams and leaves room for a TLS wrapper exposing the same operations. No new compiler syntax, nominal borrow exemption, runtime HTTP listener, handler trampoline, or libcurl server dependency is proposed. Publish public declarations, documentation and examples through the normal stdlib/tooling pipeline.
 
 ### Language capability audit
 
@@ -101,31 +140,34 @@ This is additive under `std::http`. Existing clients keep their URL model, metho
 
 ## Safety and correctness
 
-The connection is the sole owner of read-ahead and the exchange state. Store the active method semantics and persistence decision independently of the returned head's lifetime. Internal arithmetic checks run before allocating, indexing or adding cumulative sizes. Strict wire acceptance, ordered field occurrences and a single authority for message length prevent the package from accidentally reinterpreting leftover bytes as a fresh request. Verify the compiler rejects use of a view after its head is dropped or moved and overlapping mutable operations on one connection. A disconnected peer or abandoned exchange must release all owned resources exactly once.
+The driver owns unread transport bytes; the codec owns partial syntax, cumulative limits and exchange state. An event-loop driver retains the unsent body owner and cursor until output completes. It cannot start the next response or request while the current response awaits a write or flush. Store the active method semantics and persistence decision independently of the returned head's lifetime. Internal arithmetic checks run before allocating, indexing or adding cumulative sizes. Strict wire acceptance, ordered field occurrences and a single authority for message length prevent the package from accidentally reinterpreting leftover bytes as a fresh request. Verify the compiler rejects use of a view after its head is dropped or moved and overlapping mutable operations on one connection. A disconnected peer or abandoned exchange must release all owned resources exactly once.
 
 ## Performance and resource costs
 
-Target linear scanning in received octets, including a peer delivering one byte at a time. Keep scan offsets across refills, bound scratch per connection and write body spans directly. Benchmark a small persistent GET, short JSON POST, fragmented heads, streamed uploads near the limit, and rejected requests. Compare a package dispatching through this API with the same exchange over a direct byte-stream codec. Record throughput, tail latency, peak live bytes, allocations, syscalls, optimized text size and build time with one and several transport types. Demonstrate bounded memory as upload sizes and request counts grow. No measurements exist for this draft.
+Target linear scanning in received octets, including a peer delivering one byte at a time. Keep scan offsets across refills, bound scratch per connection and write body spans directly. Measure work per wakeup and memory per idle connection, including a continuously backpressured writer alongside active peers. Benchmark a small persistent GET, short JSON POST, fragmented heads, streamed uploads near the limit, and rejected requests. Compare a package dispatching through this API with the same exchange over a direct byte-stream codec. Record throughput, tail latency, peak live bytes, allocations, syscalls, optimized text size and build time with one and several transport types. Demonstrate bounded memory as upload sizes and request counts grow. No measurements exist for this draft.
 
 ## Alternatives and tradeoffs
 
-A standard `listen/serve(handler)` would be convenient for a single server style but would choose handler ownership, scheduling and shutdown conventions that competing packages should be free to explore. An HTTP-specific listener returning `server_connection` would merely wrap today's accept and open calls and would favor TCP over TLS or test streams. A public incremental bytes-in/events-out codec would better serve event loops; it needs stable consumed-prefix and partial-output contracts. Keep the internal codec separable and reconsider a public interface with an actual nonblocking consumer. Buffering an entire request in `read_request()` simplifies small JSON applications but prevents early rejection and complicates Expect handling. A framework can provide that helper over bounded `read_body`.
+A standard `listen/serve(handler)` would be convenient for a single server style but would choose handler ownership, scheduling and shutdown conventions that competing packages should be free to explore. An HTTP-specific listener returning `server_connection` would merely wrap today's accept and open calls and would favor TCP over TLS or test streams. The earlier blocking-only draft left the parser and serializer private. That would force a package using a reactor to duplicate framing or park a worker per pending operation. A callback-first async API could also serve reactors but commits the library to an executor and cancellation model. The proposed byte-oriented steps let the package choose those independently. Buffering an entire request in `read_request()` simplifies small JSON applications but prevents early rejection and complicates Expect handling. A framework can provide that helper over bounded `read_body`.
 
 ## Unresolved questions
 
 1. Is fixed-length response output sufficient for the first external consumer, or does it need a separate streaming writer with explicit finish and abort? Streaming downloads and SSE would justify the larger API.
 2. Should a zero-copy lookup for individual header values be exposed alongside indexed access at launch? Prove its lifetime through an optional return; indexed access already handles missing and repeated fields.
-3. Confirm the proposed limit defaults against representative browser requests and production proxy settings. Determine whether deployments need validated trailer access or a HEAD-only length setter before stabilizing the surface.
-4. Confirm whether the intended server package uses blocking workers. If it requires event-loop integration at launch, design and validate resumable input **and** output before accepting this blocking profile.
+3. Confirm the proposed limit defaults against representative browser requests and production proxy settings. Determine whether deployments need validated trailer access or an additional blocking HEAD-only length setter before stabilizing the surface.
+4. Should the first release also offer a convenience adapter for a particular reactor? The neutral codec and a working third-party event-loop example are required whichever adapter is chosen.
 
 ## Implementation plan
 
 1. Implement byte-level request-head decoding and ordered field access in GTI. Prove the ownership contracts, split-input behavior, strict limits and request-target forms with a scripted transport.
-2. Deliver the first runnable exchange on an accepted duplex stream with bodyless GET and fixed-length responses. Exercise ordered writes, flush failure, keep-alive and close policy on loopback.
+2. Implement resumable response framing, body acknowledgements and flush completion. Deliver the first nonblocking GET over an accepted socket and the blocking wrapper over those same public steps. Exercise ordered writes, flush failure, keep-alive and close policy on loopback.
 3. Complete bounded fixed-length and chunked input, trailers, continuation handling, early rejection, typed errors and adversarial fragmentation. Keep persistent connections disabled for any incomplete framing path.
 4. Prove the package boundary with a separate package fixture implementing `GET /monitors` and `POST /monitors`, then document the stable interface. Route matching, handler registration and JSON live in that package. Track implementation in GTI after a design decision.
 
 ## Validation and release criteria
+
+- Drive at least two real nonblocking connections on one event-loop thread in the package fixture. Stall A mid-header, complete B, then resume A. Repeat with A backpressured mid-response and show B completes before A drains. Use synchronization and bounded deadlines rather than timing guesses. Record exact wire bytes, order and connection disposition.
+- Script would-block before and after every successful input or output prefix, including within a chunk delimiter, 100 Continue, error response, and final flush. Verify no spinning, replay, loss or cross-connection state; compare blocking and incremental drivers on identical input and wire output. Test cancellation with an outstanding write, half-close after a complete request, and EOF with buffered pipelined requests.
 
 - Drive the codec with an unrelated GTI duplex type. Split representative messages at every byte boundary, coalesce two requests into one read, force short writes, and compare exact emitted bytes. Exercise peer EOF before and during every phase, duplicate headers, non-UTF-8 payloads, case-sensitive methods, HEAD, 204, 205, 304, unsupported expectations and versions, bad lengths, forbidden trailers, overflow, and limit edges.
 - Assert no output on local preflight errors. Inject read/write/flush failures before and after partial progress, check close-only behavior, and prove an ambiguous exchange never admits a subsequent request. Test borrowed accessor rejection after move/drop, one-time cleanup and resource bounds.
@@ -133,7 +175,7 @@ A standard `listen/serve(handler)` would be convenient for a single server style
 
 ## Decision record
 
-Draft for discussion. Acceptance and implementation are pending.
+2026-11-23 — The owner requested nonblocking HTTP support in the initial scope. This revision makes resumable input and output public and retains the blocking adapter above them. RFC acceptance and implementation are pending. [Proposal and revision history](https://github.com/lang-gti-official/rfcs/pull/12)
 
 ## References
 
