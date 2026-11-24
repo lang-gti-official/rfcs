@@ -101,8 +101,8 @@ Success means three things:
 
 ## Non-goals
 
-- **No new merge gate and no per-commit cost.** The tools stay opt-in. Any
-  scheduled run is a separate owner decision (see Unresolved questions).
+- **No new merge gate, no scheduled run and no per-commit cost.** The tools
+  stay local and opt-in, as the owner decided (see Decision record).
 - **No C++ oracle or parity.** The C++ backend is frozen. It is not used to
   judge GTI semantics, and C++ parity is not an acceptance criterion.
 - **No formal verification.** RFC 0002 owns machine-checked borrow-checker
@@ -318,11 +318,10 @@ No compiler phase changes. The tooling changes are:
 
 ## Unresolved questions
 
-1. **Automation.** Should a subset run on a schedule (for example weekly, with
-   `--baseline` against the previous run and an issue opened on a new hard
-   verdict)? Two earlier owner instructions bear on this: the borrow
-   laboratory was kept off CI, and the hosted-runner cost guardrail applies.
-   The default in this draft is local only.
+1. **Automation (settled 2026-11-24: local only).** The owner chose to keep
+   every tool local and opt-in, with no scheduled or CI run. This matches the
+   earlier instruction to keep the borrow laboratory off CI and the
+   hosted-runner cost guardrail. Revisiting it needs a new owner decision.
 2. **Budget.** What wall-time budget should a default "all matrices" run and
    each campaign tranche meet?
 3. **Priority.** Is the proposed priority order of new modules right? It
@@ -385,12 +384,15 @@ For each slice:
   old-style harnesses.
 
 The campaign is complete when every listed feature is reached or deliberately
-excluded, the coverage report exists for every tool, and the owner has
-decided Unresolved question 1.
+excluded, and the coverage report exists for every tool.
 
 ## Decision record
 
-No design decision yet.
+No decision on the design as a whole; the status stays `draft`.
+
+- 2026-11-24, project owner, in the planning conversation that produced this
+  draft: the tools stay local and opt-in, with no scheduled or CI run
+  (Unresolved question 1). Recorded on the proposal PR.
 
 ## References
 
