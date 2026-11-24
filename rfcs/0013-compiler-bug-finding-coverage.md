@@ -245,18 +245,30 @@ No compiler phase changes. The tooling changes are:
 - **libFuzzer harnesses** (`fuzz/`). After #679 the pipeline harness runs
   the driver's LLVM path at O0–O3 (selected by the first input byte),
   compares MIR, textual IR and the object across two fresh runs, and
-  verifies the re-parsed module. Five-minute exploratory runs found nothing
-  reproducible: the pipeline harness ran 131k inputs and the source loader
-  221k cleanly; a formatter non-idempotence on a two-newline file and a
-  17-byte parser timeout did not reproduce under minimization. The limits
-  are now reach, not checking:
+  verifies the re-parsed module. Five-minute exploratory runs from the
+  checked-in corpus ran 131k pipeline inputs and 221k source-loader inputs
+  cleanly. Their 17-byte parser timeout was first dismissed because the
+  replay used `gti check`, which stopped at the missing `gti.toml`; replayed
+  as a direct compile it is a real hang (#693). Seeding the pipeline harness
+  with the 7,612 single-file `tests/ui` programs and running 45 minutes in
+  fork mode found far more: an internal error at O1 and above (#686) and
+  parser recovery spins in three entry points, protocol-concept bodies
+  (#692), `for` statements (#693) and class member declarations (#696), plus
+  compile time that doubles per link in a chain of constructors (#697).
+  Under ASan, deep generic instantiation overflows the stack before the
+  release compiler's depth limit (GTI-S2105) is reached; those are harness
+  artifacts, not defects. The formatter non-idempotence did not reproduce.
+  Seeding was the single largest improvement. The limits are now reach and
+  triage, not checking:
   - A structure-aware mutator, or grammar-seeded corpus, for the pipeline
     harness, seeded from `tests/ui`, `examples/` and the coverage corpus, so
     that more inputs pass semantics and reach MIR and LLVM.
   - A corpus-refresh routine that merges inputs which raise coverage into the
     curated seed corpus deliberately.
   - A reproduction step for harness timeouts and non-idempotence, so that
-    flaky reports are either confirmed and captured or discarded.
+    flaky reports are either confirmed and captured or discarded. It replays
+    with a direct compile (never `gti check`, which needs a project), on the
+    release compiler, and clusters hangs by sampled stack before reducing.
   - Restoring ASan container-overflow detection in the pipeline harness (it
     is off there because uninstrumented LLVM libraries share vectors with
     instrumented GTI passes), for example by building LLVM instrumented or
