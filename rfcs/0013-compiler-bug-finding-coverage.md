@@ -37,7 +37,7 @@ finding beyond those cited.
 
 ## Motivation and goals
 
-The phase-one refactor (GTI PRs #673, #676 and the fuzz-harness PR) made the
+The phase-one refactor (GTI PRs #673, #676 and #679) made the
 tools LLVM-first. It did not widen what they generate. Their generators still
 reflect the language of their authorship:
 
@@ -242,14 +242,25 @@ No compiler phase changes. The tooling changes are:
     model independently is not added.
   - Allow `--levels` to select O0–O3, so O1 and O2 regressions (such as #677)
     are reachable without code changes.
-- **libFuzzer harnesses** (`fuzz/`). This part is provisional until the
-  phase-one fuzz report lands. Candidates:
+- **libFuzzer harnesses** (`fuzz/`). After #679 the pipeline harness runs
+  the driver's LLVM path at O0–O3 (selected by the first input byte),
+  compares MIR, textual IR and the object across two fresh runs, and
+  verifies the re-parsed module. Five-minute exploratory runs found nothing
+  reproducible: the pipeline harness ran 131k inputs and the source loader
+  221k cleanly; a formatter non-idempotence on a two-newline file and a
+  17-byte parser timeout did not reproduce under minimization. The limits
+  are now reach, not checking:
   - A structure-aware mutator, or grammar-seeded corpus, for the pipeline
     harness, seeded from `tests/ui`, `examples/` and the coverage corpus, so
-    that more inputs pass parsing.
-  - Running the pipeline property at an optimized level as well as O0.
+    that more inputs pass semantics and reach MIR and LLVM.
   - A corpus-refresh routine that merges inputs which raise coverage into the
     curated seed corpus deliberately.
+  - A reproduction step for harness timeouts and non-idempotence, so that
+    flaky reports are either confirmed and captured or discarded.
+  - Restoring ASan container-overflow detection in the pipeline harness (it
+    is off there because uninstrumented LLVM libraries share vectors with
+    instrumented GTI passes), for example by building LLVM instrumented or
+    by suppressing only frames inside LLVM.
 - **Coverage measurement.** Add a mode that runs a chosen tool under the
   existing `-DGTI_ENABLE_SOURCE_COVERAGE=ON` build. It reports the lines and
   branches the tool reaches that the per-commit suite does not, using
@@ -330,8 +341,8 @@ No compiler phase changes. The tooling changes are:
    language intend compile-time and run-time results to differ (resource
    limits, allocation, I/O)? The oracle needs that list from `docs/language/`
    before it can be implemented.
-5. **Fuzzing scope.** The fuzzing items stay provisional until the phase-one
-   fuzz report states what the harnesses reach today.
+5. **Fuzzing scope.** Is a structure-aware mutator worth its maintenance,
+   or is a grammar-seeded corpus enough to move inputs past semantics?
 6. **Unmerged features.** Should features that exist only as RFC drafts
    (lifetime parameters' inference, borrowed container elements under
    RFC 0003, RFC 0010 streams) be generated only after their implementation
@@ -355,7 +366,7 @@ normal workflow.
    `-g` agreement.
 5. **Interaction campaign, tranche A**, plus `--levels`.
 6. **Interaction campaign, tranche B.**
-7. **Fuzz items**, once the phase-one report is in.
+7. **Fuzz items:** seeded corpus, refresh, timeout reproduction.
 8. **Findings flow:** `--capture` bundles from matrices and the campaign.
 
 Each slice runs its tools on current `main` and files any findings as issues
