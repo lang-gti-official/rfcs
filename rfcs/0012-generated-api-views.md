@@ -150,9 +150,22 @@ The core carries structured declarations, containment/order, parameter/type/requ
 
 Snapshot-local pointers and `SymbolId`s must not escape. Use stable project/package-relative source identities and separate declaration identity from presentation grouping and re-export paths. A persisted presentation key need not be a compiler identity. Every externally serialized format needs a version; changing its schema requires explicit consumer migration.
 
-### Required investigation gate
+### Phase 0: architecture investigation and expansion plan
 
-Before implementation commits to the final data model, inventory declaration kinds and contract fields across the existing index, signature printer, source/export graph and semantic occurrence data. Exercise at least one real user package, one re-exporting multi-module package, and the stdlib. Identify which facts already exist, which belong in frontend producers, and which merely require a renderer. Record findings in the eventual implementation plan linked to this RFC.
+Before implementing the shared core or either new generation path, produce a reviewable architecture and migration plan for expanding the current stdlib-specific documentation model into a general API projection. This is a planning phase with its own deliverable, not an instruction to begin a broad refactor.
+
+Inventory declaration kinds and contract fields across the existing index, signature printer, source/export graph and semantic occurrence data. Use at least one real user package, one re-exporting multi-module package, and the stdlib as representative inputs. Identify which facts already exist, which are missing from frontend producers, and which merely require a renderer. Record findings and source/test evidence in the implementation plan linked to this RFC.
+
+The Phase 0 deliverable must contain:
+
+- **Current-to-proposed responsibility map:** which existing types/functions stay, which become general, and which remain stdlib-specific adapters. Move stdlib selection policy out of the general extraction contract without duplicating that extraction.
+- **Model and query contract:** structured declarations, containment, exports/re-exports, conformances, documentation, origins and configuration identity; ownership of each fact and the boundary between snapshot-local data and owned presentation records. Describe how a caller selects a package, module or stdlib view without hard-coded standard-library eligibility in the shared core.
+- **Consumer requirements matrix:** map the facts needed by existing docgen, future project documentation and `.gtih` output to their producers. Identify genuinely shared facts versus renderer-specific formatting, grouping and publication policy. Do not design a full future documentation website as a prerequisite.
+- **Compatibility and migration sequence:** preserve the existing documentation JSON contract through an adapter where possible, name any intentional schema changes and affected reference-site consumers, and identify when the superseded extraction path is removed. A permanent second implementation is not an acceptable migration endpoint.
+- **Gap and validation plan:** name missing alias/export/conformance facts, proposed producer changes, representative fixtures, cross-renderer comparisons and performance baselines. Distinguish proven implementation support from assumptions that still need a focused prototype.
+- **Bounded implementation slices:** list dependencies, affected components and completion criteria for the shared core and each consumer. Compare the smallest coherent extension of today's model with extracting a new shared model, and justify the selected approach.
+
+Phase 0 is complete when this plan makes the proposed boundary and migration concrete enough to review, accounts for the known gaps, and defines how later implementation will prove both consumers share the same facts. It does not require a working replacement core or claim those proofs already pass. Material changes to this RFC's design must be recorded here rather than hidden in the implementation plan.
 
 Resolve the known namespace-alias presentation gap and determine how to expose concept-conformance edges without synthetic namespace leakage. Trace method/field visibility separately from module export reachability. Verify capture of public generic defaults and ownership contracts rather than assuming the current flat signature schema is complete. Confirm project-facts resolution supplies every contextual input; do not create a second manifest resolver.
 
@@ -218,16 +231,17 @@ The output defaults, optional explicit directory and adjacent mode, retention of
 
 ## Implementation plan
 
-1. **Inventory and model proof:** audit the pinned machinery against current main, build the declaration/contract coverage matrix, and resolve known alias/export/conformance gaps at the proper producer. Record evidence and final model choice in an implementation plan after design acceptance.
-2. **Shared core and existing consumer:** generalize projection selection and structured data, then move existing docgen through a compatibility adapter. Prove existing index output parity except for separately explained corrections; retain all current tests.
-3. **Interface renderer:** render package-owned `.gtih` records from the same projection. Add snapshots covering all supported declaration families and cross-renderer fact comparisons. Do not implement a second source traversal in the renderer.
-4. **Project command and publication:** reuse `ProjectFacts`, add target/configuration selection, default/custom/adjacent paths, tracked publication, source maps and `--check`. Exercise real project and dependency contexts.
-5. **Tooling and documentation:** recognize the generated extension, document limitations and workflows, and coordinate any documentation schema migration with the reference repository. Add richer navigation later without another projection.
+0. **Architecture expansion plan:** complete the Phase 0 investigation and publish the linked model, responsibility map, consumer requirements, migration sequence and validation plan before shared-core implementation begins. This phase plans the generalization; it does not implement it.
+1. **Shared core and existing consumer:** implement the planned producer fixes and generalize projection selection and structured data, then move existing docgen through a compatibility adapter. Prove existing index output parity except for separately explained corrections; retain all current tests.
+2. **Interface renderer:** render package-owned `.gtih` records from the same projection. Add snapshots covering all supported declaration families and cross-renderer fact comparisons. Do not implement a second source traversal in the renderer.
+3. **Project command and publication:** reuse `ProjectFacts`, add target/configuration selection, default/custom/adjacent paths, tracked publication, source maps and `--check`. Exercise real project and dependency contexts.
+4. **Tooling and documentation:** recognize the generated extension, document limitations and workflows, and coordinate any documentation schema migration with the reference repository. Add richer navigation later without another projection.
 
 This RFC does not authorize implementation. Subsequent implementation tracking must link back to the accepted design and apply GTI's normal focused validation and merge-queue lifecycle.
 
 ## Validation and release criteria
 
+- Before shared-core implementation, the Phase 0 plan must identify the general query/model contract, known fact gaps, affected consumers, migration steps and test/performance obligations. Later phases must demonstrate the planned cross-consumer reuse; a planning document alone does not prove it.
 - Golden listings cover namespaces/aliases, classes/structs/interfaces/unions, enum values/payloads, fields, functions, methods, constructors/destructors, operators, macros, generics/packs, constraints, defaults, declared attributes, explicit lifetime/borrow contracts, mutating/consuming/unsafe signatures, concepts and conformances. Preserve contracts and remove executable bodies.
 - Test an unrelated user package, multi-file modules, explicit exports/re-exports, same-named overloads and private helper types. Verify public-only versus internal views, ownership of imported declarations, contextual `std.package`, and target-dependent APIs.
 - Assert `.gtih` never enters source discovery/import/compilation, and adding or editing a listing cannot change normal build meaning. Diagnose explicit misuse.
@@ -241,6 +255,8 @@ This RFC does not authorize implementation. Subsequent implementation tracking m
 ## Decision record
 
 2026-11-24 — The owner requested an RFC for generated `.gtih` API listings, with build-directory output by default, an explicit output location option and adjacent generation. The owner also requested investigation of a shared foundation for API generation and docgen to avoid duplicate maintenance. This draft proposes that shared projection as the first implementation prerequisite. Design acceptance and implementation remain pending.
+
+2026-11-24 — Following the owner's request for an explicit planning phase, this revision separates Phase 0 architecture investigation and expansion planning from shared-core implementation, and specifies its deliverables and completion criteria. Acceptance and implementation remain pending.
 
 ## References
 
